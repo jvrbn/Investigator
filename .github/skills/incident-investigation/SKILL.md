@@ -500,6 +500,18 @@ For EACH device selected by the user:
 .github/skills/computer-investigation/SKILL.md
 ```
 
+**🔴 MDE-alert-sourced devices → alert-anchored mode.** When a selected device is evidence of an MDE alert in this incident (verify each alert's `ServiceSource`; never infer MDE from the alert title), pass a structured handoff instead of the hostname alone and follow [MDE Alert-Anchored Mode](../computer-investigation/SKILL.md#mde-alert-anchored-mode):
+
+```
+mode: mde_alert_anchored
+workspace_id: <SELECTED_WORKSPACE_IDS>
+incident: { provider_incident_id, sentinel_incident_number }
+alerts:   [ { alert_id, service_source, first_activity_utc, last_activity_utc, status, classification, determination } ]
+cases:    [ { alert_id, device_id, device_name, role: impacted | related } ]   # one entry per (alert, device); alert_id references alerts[]
+```
+
+Entity selection stays manual (Step 2.4): impacted devices first, related devices only when the user selects them, one case per (alert, device). Devices with no MDE alert evidence continue with the standalone workflow. The returned triage card feeds the Phase 1.5 sweep, the Phase 3 loop and the Phase 4 gates; its related-activity table is evidence for cohesion, not extra scope.
+
 **Key Steps (summary - see skill file for full details):**
 1. Get Device IDs (Entra Device ID + Defender Device ID)
 2. Determine device type (Entra Joined, Hybrid Joined, Entra Registered)

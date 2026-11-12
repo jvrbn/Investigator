@@ -400,7 +400,7 @@ Never generate executable commands that change tenant, mailbox, user, device, or
 
 | Category | Skill | Description | Trigger Keywords |
 |----------|-------|-------------|------------------|
-| 🔍 Core | **computer-investigation** | Device security analysis (alerts, compliance, vulnerabilities, process/network/file events) | "investigate computer", "investigate device", "investigate endpoint", "check machine", hostname |
+| 🔍 Core | **computer-investigation** | Device security analysis (alerts, compliance, vulnerabilities, process/network/file events). Includes MDE alert-anchored mode: alert + device + time-window triage with process tree, timeline, outcome vs. attempt, and related-event context | "investigate computer", "investigate device", "investigate endpoint", "check machine", "investigate MDE alert", "endpoint alert triage", hostname, MDE alert ID |
 | 🔍 Core | **honeypot-investigation** | Honeypot attack analysis with threat intel and executive reports | "honeypot", "attack analysis", "threat actor" |
 | 🔍 Core | **incident-investigation** | Defender XDR / Sentinel incident triage with recursive entity investigation | "investigate incident", "incident ID", "analyze incident", "triage incident", incident number |
 | 🔍 Core | **ioc-investigation** | IoC analysis for IPs, domains, URLs, file hashes with TI enrichment | "investigate IP", "investigate domain", "investigate URL", "investigate hash", "IoC", "is this malicious", "threat intel", IP/domain/URL/hash |

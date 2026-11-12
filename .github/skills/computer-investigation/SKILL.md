@@ -1,6 +1,6 @@
 ---
 name: computer-investigation
-description: Use this skill when asked to investigate a computer, device, endpoint, or machine for security issues, suspicious activity, malware, or compliance review. Triggers on keywords like "investigate computer", "investigate device", "investigate endpoint", "check machine", "device security", "endpoint investigation", or when a device name/hostname is mentioned with investigation context. This skill provides comprehensive device security analysis including Defender alerts, sign-in patterns, logged-on users, vulnerabilities, software inventory, compliance status, network activity, and automated investigation tracking for Entra Joined, Hybrid Joined, and Entra Registered devices.
+description: Use this skill when asked to investigate a computer, device, endpoint, or machine for security issues, suspicious activity, malware, or compliance review. Triggers on keywords like "investigate computer", "investigate device", "investigate endpoint", "check machine", "device security", "endpoint investigation", or when a device name/hostname is mentioned with investigation context. This skill provides comprehensive device security analysis including Defender alerts, sign-in patterns, logged-on users, vulnerabilities, software inventory, compliance status, network activity, and automated investigation tracking for Entra Joined, Hybrid Joined, and Entra Registered devices. It also has an MDE alert-anchored mode that triggers on "investigate MDE alert", "Defender for Endpoint alert triage", "endpoint alert triage", "triage this alert on a device", an MDE alert ID, or an incident with MDE device evidence, and it anchors on the alert device, process, and time window and adds related-event context.
 threat_pulse_domains: [endpoint]
 drill_down_prompt: 'Investigate device {entity} — Defender alerts, process activity, vulnerabilities, compliance'
 ---
@@ -20,17 +20,18 @@ This skill performs comprehensive security investigations on Windows, macOS, and
 ## 📑 TABLE OF CONTENTS
 
 1. **[Critical Workflow Rules](#-critical-workflow-rules---read-first-)** - Start here!
-2. **[Investigation Types](#available-investigation-types)** - Standard/Quick/Comprehensive
-3. **[Output Modes](#output-modes)** - Inline / Markdown file / JSON export
-4. **[Quick Start](#quick-start-tldr)** - 5-step investigation pattern
-5. **[Execution Workflow](#execution-workflow)** - Complete process
-6. **[Sample KQL Queries](#sample-kql-queries)** - Validated query patterns
-7. **[Microsoft Graph Queries](#microsoft-graph-device-queries)** - Entra ID device data
-8. **[Defender for Endpoint Queries](#defender-for-endpoint-queries)** - MDE API integration
-9. **[Markdown Report Template](#markdown-report-template)** - Full markdown report structure
-10. **[JSON Export Structure](#json-export-structure)** - Required fields
-11. **[Error Handling](#error-handling)** - Troubleshooting guide
-12. **[SVG Dashboard Generation](#svg-dashboard-generation)** - Visual dashboard from report data
+2. **[MDE Alert-Anchored Mode](#mde-alert-anchored-mode)** - Alert-triggered triage with related-event context
+3. **[Investigation Types](#available-investigation-types)** - Standard/Quick/Comprehensive
+4. **[Output Modes](#output-modes)** - Inline / Markdown file / JSON export
+5. **[Quick Start](#quick-start-tldr)** - 5-step investigation pattern
+6. **[Execution Workflow](#execution-workflow)** - Complete process
+7. **[Sample KQL Queries](#sample-kql-queries)** - Validated query patterns
+8. **[Microsoft Graph Queries](#microsoft-graph-device-queries)** - Entra ID device data
+9. **[Defender for Endpoint Queries](#defender-for-endpoint-queries)** - MDE API integration
+10. **[Markdown Report Template](#markdown-report-template)** - Full markdown report structure
+11. **[JSON Export Structure](#json-export-structure)** - Required fields
+12. **[Error Handling](#error-handling)** - Troubleshooting guide
+13. **[SVG Dashboard Generation](#svg-dashboard-generation)** - Visual dashboard from report data
 
 **Investigation shortcuts:**
 - **Device with behavioral drift** (TP Q6): **Q3** (suspicious processes) → **Q11** (logon events) → **Q7** (incidents) → **Q8** (device info)
@@ -44,6 +45,8 @@ This skill performs comprehensive security investigations on Windows, macOS, and
 ---
 
 ## ⚠️ CRITICAL WORKFLOW RULES - READ FIRST ⚠️
+
+**Mode check:** if the request supplies an MDE alert ID, a Defender XDR incident with MDE alerts, or an incident-investigation handoff, follow [MDE Alert-Anchored Mode](#mde-alert-anchored-mode). Its rules override the date-range and output-mode defaults below. A hostname alone continues with the standalone workflow.
 
 **Before starting ANY computer investigation:**
 
@@ -135,6 +138,37 @@ IF query returns "Failed to resolve table" or similar error:
 - **Characteristics**: Personal/BYOD devices, user adds work account
 - **Identity**: User authenticates with Entra ID, device not fully managed
 - **Common scenarios**: BYOD policies, personal device access to corporate resources
+
+---
+
+## MDE Alert-Anchored Mode
+
+**Use when** the request supplies an MDE alert ID, a Defender XDR incident containing MDE alerts, or an [incident-investigation](../incident-investigation/SKILL.md) handoff (alert + `DeviceId`). A hostname alone stays in the standalone workflow below.
+
+**Read first:** [alert-anchored-mode.md](alert-anchored-mode.md) (entry contract, windows, seed resolution, related-activity model, triage card, JSON ledger). **Queries:** [mde_alert_device_forensics.md](../../../queries/endpoint/mde_alert_device_forensics.md) (Q1–Q13). They were parsed and schema-checked offline but **not yet executed against a tenant**: apply the global zero-result sanity check and report any query that fails instead of working around it.
+
+**Read-only.** Do not isolate, collect packages, run Live Response, quarantine, block indicators, or write to incidents. Propose such actions as approval-required next steps using portal navigation.
+
+**What the analyst gets:** a one-page triage card (assessment, decision needed, alert/device/window, attempted-vs-observed outcome, Defender actions, confidence) followed by an evidence-cited narrative, process tree, UTC timeline, **related activity**, coverage, alternative explanations and next steps.
+
+### Rules that override the standalone workflow
+
+| Topic | Alert-anchored rule |
+|-------|---------------------|
+| Scope | Query by the verified `DeviceId` from alert evidence, not hostname `startswith`. One case per (alert, `DeviceId`); impacted devices first, related devices only by request |
+| Time | Anchor on the alert's first/last **activity**: `[first − 30 min, last + 2 h)` UTC, half-open, capped at a cutoff frozen at start. No "last N days" and no +1/+2-day padding. Widen only with a stated reason |
+| Process identity | Key on `ProcessUniqueId`; fallback is `pid@creation-time`; never PID alone. `AlertEvidence` has no process-ID columns, so take PID + creation time from the alert API |
+| Tools | Advanced Hunting by default (≤ 30 d); `AlertInfo`/`AlertEvidence` are AH-only. Do **not** use `ListAlerts` with a machine filter (unsupported parameters are ignored and it returns tenant-wide alerts); use Q1/Q10 or `GetDefenderMachineAlerts` |
+| Prompts | Default to the inline triage card; add the markdown file or JSON ledger on request or when unattended. Do not block on the output-mode prompt. Workspace selection rules above still apply |
+| Empty vs. unknown | Use the coverage statuses (`complete` … `not_run`), never the legacy "Required Field Defaults" / "Empty Result Handling" |
+| Identifiers | Defender XDR alert ID ≠ provider alert ID ≠ `SystemAlertId`; use `ProviderIncidentId` for the Triage MCP |
+| Output | Keep severity, confidence, business impact and urgency separate (no 0–100 risk score). Defang IPs/URLs. Cite an evidence ID (`DeviceName|Timestamp|ReportId`) for every finding |
+
+### Workflow
+
+S0 validate trigger and scope → S1 coverage (Q2, Q3) → S2 establish the case (alert API, Q1, device and response status) → S3 process chain (Q4) → S4 attributed artifacts (Q5–Q9, parallel) → S5 signal-selected branches → **S6 related activity (Q10–Q13 in parallel, running only the Q11 parts that have indicators, plus the incident cohesion / adjacent-alert sweep)** → S7 assess and write the card → S8 analyst review (acquisition or response only with explicit approval). Stage outputs and stop conditions: [alert-anchored-mode.md §5](alert-anchored-mode.md#5-stages-and-stop-conditions).
+
+**Related activity is context, not scope expansion.** Show each related alert or entity with its pivot (same device, hash, IP/URL, account, payload origin, lateral logon), a strength rating and its source. Hand related devices and users off as ready-to-run prompts instead of investigating them automatically.
 
 ---
 

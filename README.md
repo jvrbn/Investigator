@@ -112,7 +112,7 @@ This system uses **[VS Code Agent Skills](https://code.visualstudio.com/docs/cop
 | Category | Skill | Description | Trigger Keywords |
 |----------|-------|-------------|------------------|
 | ⚡ Quick Scan | **[threat-pulse](/.github/skills/threat-pulse/SKILL.md)** | Rapid broad-spectrum security scan across 7 domains: active incidents, identity (human + NHI), endpoint, email threats, admin & cloud ops, exposure. Prioritized Threat Pulse findings with color-coded verdicts and drill-down recommendations | "threat pulse", "quick scan", "security pulse", "morning hunt", "what can you do", "where do I start", "what's going on" |
-| 🔍 Core Investigation | **[computer-investigation](/.github/skills/computer-investigation/SKILL.md)** | Device security analysis for Entra Joined, Hybrid Joined, and Entra Registered devices: Defender alerts, compliance, logged-on users, vulnerabilities, process/network/file events | "investigate computer", "investigate device", "investigate endpoint", "check machine", hostname |
+| 🔍 Core Investigation | **[computer-investigation](/.github/skills/computer-investigation/SKILL.md)** | Device security analysis for Entra Joined, Hybrid Joined, and Entra Registered devices: Defender alerts, compliance, logged-on users, vulnerabilities, process/network/file events. Includes an **MDE alert-anchored mode**: one-page triage card, process tree, UTC timeline, outcome vs. attempt, and related-event context (other alerts, hash/IP/account pivots, payload origin) | "investigate computer", "investigate device", "investigate endpoint", "check machine", "investigate MDE alert", "endpoint alert triage", hostname, MDE alert ID |
 | 🔍 Core Investigation | **[honeypot-investigation](/.github/skills/honeypot-investigation/SKILL.md)** | Honeypot security analysis: attack patterns, threat intel, vulnerabilities, executive reports | "honeypot", "attack analysis", "threat actor" |
 | 🔍 Core Investigation | **[incident-investigation](/.github/skills/incident-investigation/SKILL.md)** | Comprehensive incident analysis for Defender XDR and Sentinel incidents: criticality assessment, entity extraction, filtering, recursive entity investigation | "investigate incident", "incident ID", "analyze incident", "triage incident", incident number |
 | 🔍 Core Investigation | **[ioc-investigation](/.github/skills/ioc-investigation/SKILL.md)** | Indicator of Compromise analysis: IP addresses, domains, URLs, file hashes. Includes Defender Threat Intelligence, Sentinel TI tables, CVE correlation, organizational exposure | "investigate IP", "investigate domain", "investigate URL", "investigate hash", "IoC", "is this malicious" |
@@ -154,6 +154,7 @@ You don't need to mention the skill name — keywords are detected automatically
 | "Analyze incident 12345" | incident-investigation |
 | "Is this IP malicious? 203.0.113.42" | ioc-investigation |
 | "Check the device WORKSTATION-01 for threats" | computer-investigation |
+| "Investigate MDE alert `<alert id>` and show related activity" | computer-investigation (alert-anchored mode) |
 | "Show attack patterns on a heatmap" | heatmap-visualization |
 | "Generate an SVG dashboard from the report" | svg-dashboard |
 | "Map the geographic origins of these attacks" | geomap-visualization |
