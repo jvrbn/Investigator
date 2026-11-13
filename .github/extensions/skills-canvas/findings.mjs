@@ -156,9 +156,12 @@ export async function addFinding(repoRoot, input, knownSkillNames) {
     const finding = {
         id: "f_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         ts: Date.now(),
+        context: input.context ? structuredClone(input.context) : null,
+        status: ["complete", "error", "unavailable"].includes(input.status) ? input.status : "complete",
         skill: String(input.skill || "unknown").slice(0, 80),
         title: String(input.title || "Untitled finding").slice(0, 200),
-        severity: normalizeSeverity(input.severity),
+        severity: ["error", "unavailable"].includes(input.status) && normalizeSeverity(input.severity) === "clean"
+            ? "info" : normalizeSeverity(input.severity),
         scope: input.scope ? String(input.scope).slice(0, 120) : "",
         summary: String(input.summary || "").slice(0, 1200),
         metrics: Array.isArray(input.metrics)
@@ -210,7 +213,7 @@ export async function addFinding(repoRoot, input, knownSkillNames) {
         autopilotVerdict: null,
     };
     const supplied = Array.isArray(input.recommended) ? input.recommended : [];
-    finding.recommended = supplied.length
+    finding.recommended = finding.status !== "complete" ? [] : supplied.length
         ? supplied.slice(0, 6).map((r) => ({
               skill: String(r.skill || "").slice(0, 80),
               entity: r.entity ? String(r.entity).slice(0, 200) : "",

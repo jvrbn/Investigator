@@ -62,6 +62,39 @@ When you need environment values (especially for Azure MCP Server calls), **read
 
 **When making Azure MCP Server calls**, always pass `tenant` and `subscription` from `config.json` to avoid the multi-tenant auth issue (DefaultAzureCredential may pick up the wrong tenant).
 
+### Tenant profiles and immutable investigation contexts
+
+The [tenant-context workflow](../docs/tenant-contexts.md) applies before every
+investigation when tenant profiles are configured. Select the profile and
+workspace explicitly when multiple exist, and freeze the tenant, workspace,
+connection references, case/run ID, and time window for the run. Legacy root
+configuration remains supported when no profiles are configured.
+
+- A selected profile is authoritative: do not merge missing profile values,
+  mappings, or memory with another tenant or the legacy root environment.
+- Child skills inherit the original context. Instructions to read `config.json`
+  mean resolve that profile, not switch back to root defaults.
+- Offline profile validation is not authentication. Run the authenticated
+  read-only checks when available, and separately verify each actual MCP
+  connection's scope. A CLI token or tenant header does not prove MCP identity.
+- Triage MCP still requires supported home-tenant access and does not provide
+  Sentinel workspace selection. Mark unsupported capabilities unavailable.
+- Discover and select workspaces within each selected tenant's authenticated
+  Data Lake connection. `default` refers to that connection's system-table
+  scope, never to all tenants.
+- Use only the selected tenant's context-memory file: skim section headings,
+  search the concrete entities and automation fingerprints, and read matching
+  sections before collection and before a verdict. Cite matching ground truth.
+  Report missing memory explicitly; do not borrow another tenant's baseline.
+- Partition evidence, reports, caches, findings, and memory by tenant and run.
+  IDs are tenant-qualified; equal display names or incident numbers do not
+  identify the same entity across tenants.
+- Record Mission Control results against the captured launch context, not the
+  currently selected tenant. Never silently reroute failed collection or writes.
+- Cross-tenant hunts require explicit selected scopes and the
+  [cross-tenant-hunt skill](skills/cross-tenant-hunt/SKILL.md); they are read-only.
+  Unsupported, failed, unverified, and clean are distinct result states.
+
 ---
 
 ## 🔴 SENTINEL WORKSPACE SELECTION - GLOBAL RULE
@@ -405,6 +438,11 @@ Never generate executable commands that change tenant, mailbox, user, device, or
 | 🔍 Core | **incident-investigation** | Defender XDR / Sentinel incident triage with recursive entity investigation | "investigate incident", "incident ID", "analyze incident", "triage incident", incident number |
 | 🔍 Core | **ioc-investigation** | IoC analysis for IPs, domains, URLs, file hashes with TI enrichment | "investigate IP", "investigate domain", "investigate URL", "investigate hash", "IoC", "is this malicious", "threat intel", IP/domain/URL/hash |
 | 🔍 Core | **user-investigation** | Entra ID user security analysis (sign-ins, MFA, anomalies, incidents, Identity Protection) | "investigate user", "security investigation", "check user activity", UPN/email |
+| 🔍 Core | **bec-investigation** | Email-to-account compromise chain: delivery/clicks, authentication, mailbox rules/access, outbound mail, and current exposure | "BEC", "business email compromise", "mailbox takeover", "payment fraud" |
+| 🔍 Core | **ransomware-investigation** | Attributed endpoint execution, file impact, lateral movement, control outcomes, and affected-device scope | "ransomware investigation", "encryption incident", "destructive activity" |
+| 🤖 GenAI | **local-agent-investigation** | Local agent discovery, observed tools/MCP usage, authorized prompt/response imports, and evidence timeline | "local agent actions", "local agent investigation", "agent prompts and responses" |
+| 🔍 Hunt | **cross-tenant-hunt** | Explicitly scoped read-only hunts with per-tenant authentication, evidence isolation, and partial-result accounting | "cross-tenant hunt", "hunt across tenants", "multi-tenant investigation" |
+| 🔧 Tooling | **telemetry-health** | Investigation readiness: rule failures, ingestion regressions, required-source freshness, and sensor coverage | "telemetry health", "detection health", "missing telemetry", "investigation readiness" |
 | 🔐 Auth | **authentication-tracing** | Authentication chain forensics (SessionId, token reuse, geographic anomalies) | "trace authentication", "SessionId analysis", "token reuse", "geographic anomaly", "impossible travel" |
 | 🔐 Auth | **ca-policy-investigation** | Conditional Access policy forensics and bypass detection | "Conditional Access", "CA policy", "device compliance", "policy bypass", "53000", "50074", "530032" |
 | 📈 Behavioral | **scope-drift-detection/device** | Device process baseline drift analysis with weighted Drift Score | "device drift", "device process drift", "endpoint drift", "process baseline", "device behavioral change", "device scope drift" |

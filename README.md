@@ -1,6 +1,6 @@
 # 🔒 Security Investigation Automation System
 
-**Comprehensive, automated security investigations powered by Microsoft Sentinel, Defender XDR, Graph API, and threat intelligence — with 25 specialized Agent Skills**
+**Comprehensive, automated security investigations powered by Microsoft Sentinel, Defender XDR, Graph API, and threat intelligence — with specialized Agent Skills**
 
 > 🎛️ **Walkthrough using GitHub Copilot (15 min):** See the new Mission Control canvas app in action — [Watch on LinkedIn](https://lnkd.in/p/gm4yB-9Y). A guided tour of the launchable skills dashboard: filter investigation skills by domain, search, and one-click launch skills or route an entity to the right investigation.
 
@@ -48,17 +48,67 @@ copy .vscode\mcp.json.template .vscode\mcp.json
 "Investigate user@domain.com for the last 7 days"    → user-investigation
 "Analyze incident 12345"                              → incident-investigation
 "Is this IP malicious? 203.0.113.42"                  → ioc-investigation
-"What skills do you have access to?"                  → lists all 25 skills
+"What skills do you have access to?"                  → lists available skills
 ```
 
 **For detailed workflows and KQL queries:**
 → [.github/copilot-instructions.md](.github/copilot-instructions.md) (universal patterns, skill detection)
-→ [.github/skills/](.github/skills/) (25 specialized investigation workflows)
+→ [.github/skills/](.github/skills/) (specialized investigation workflows)
 → [queries/](queries/) (verified KQL query library)
 
 ---
 
 ## Architecture Overview
+
+### Multi-tenant and investigation workflow extensions
+
+Tenant profiles extend the legacy single-tenant setup without changing its
+default authentication. See [Tenant contexts](docs/tenant-contexts.md) for profile
+configuration, immutable case contexts, and offline versus authenticated
+read-only validation. **Tenant selection is not an authorization grant.**
+Azure CLI validation does not validate an MCP session; Sentinel Triage's
+home-tenant/delegation limitations still apply.
+
+Mission Control supports tenant-scoped investigation launches and findings.
+Keep each launch's original context when recording results; changing the
+dashboard selection must not change an in-flight investigation's destination.
+Cross-tenant collection is explicitly scoped and read-only, with separate
+coverage and failure reporting for every selected tenant/workspace.
+
+| Workflow | Example prompt | Scope |
+|----------|----------------|-------|
+| [Local agent investigation](.github/skills/local-agent-investigation/SKILL.md) | "Investigate local agent actions on this device" | Discovery, observed actions, supported content imports, and UTC evidence timeline |
+| [Cross-tenant hunt](.github/skills/cross-tenant-hunt/SKILL.md) | "Hunt this indicator across the selected tenants" | Explicit tenant/workspace selection and separate collection results |
+| [Business email compromise](.github/skills/bec-investigation/SKILL.md) | "Investigate BEC for user@contoso.com" | Delivery/clicks, authentication, mailbox rules/access, outbound mail, and response state |
+| [Ransomware investigation](.github/skills/ransomware-investigation/SKILL.md) | "Investigate ransomware incident 12345" | Process attribution, file impact, lateral movement, and observed control outcomes |
+| [Telemetry health](.github/skills/telemetry-health/SKILL.md) | "Check investigation readiness for the selected workspace" | Rule failures, ingestion change, required-source freshness, and sensor coverage |
+
+For authorized local evidence exports, see the
+[local-agent evidence importer](docs/local-agent-evidence.md). Content collection
+is explicit opt-in; configured MCP servers and declared tools are not proof of
+execution, and missing prompt text is not proof of no activity.
+
+The secure Python context/evidence writers require Python 3.8+ and POSIX
+descriptor-relative, no-follow filesystem support. They fail closed on
+unsupported platforms; use a supported POSIX environment for those helpers.
+This does not change the existing Windows investigation workflows.
+
+These workflows reuse existing query libraries. Their availability does not
+mean a query was live-tested or a connection authenticated in your environment;
+the run must report those checks and any gaps explicitly.
+
+Offline extension checks (from the repository root):
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py'
+MC_TEST_PYTHON=/bin/python3 node --experimental-vm-modules --test .github/extensions/skills-canvas/tenant-context.test.mjs
+node .github/extensions/skills-canvas/check-ui.mjs
+python3 .github/manifests/build_manifest.py --validate-only
+```
+
+The orchestration tests mock the SDK boundary; these checks do not prove live
+tenant access. Set `MC_TEST_PYTHON` to your supported Python executable when it
+is not available at `/bin/python3`.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -68,7 +118,7 @@ copy .vscode\mcp.json.template .vscode\mcp.json
 │            (Skill detection, universal patterns, routing)          │
 ├────────────────────────────────────────────────────────────────────┤
 │                     .github/skills/*.md                            │
-│       (25 specialized workflows with KQL, risk assessment)         │
+│       (domain workflows with KQL and risk assessment)             │
 ├────────────────────────────────────────────────────────────────────┤
 │                     MCP Servers (Platform)                         │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │
@@ -96,7 +146,7 @@ copy .vscode\mcp.json.template .vscode\mcp.json
 ```
 
 **Key Components:**
-- **25 Agent Skills** — Modular investigation workflows for incidents, users, devices, IoCs, authentication, scope drift (SPN/User/Device), MCP monitoring, exposure management, AI agent posture, app registration posture, identity posture, data security analysis, email threat posture, MITRE ATT&CK coverage, ingestion analysis, detection authoring, threat pulse scanning, SVG dashboards, and more
+- **Agent Skills** — Modular investigation workflows for incidents, users, devices, IoCs, authentication, scope drift (SPN/User/Device), MCP monitoring, exposure management, AI agent posture, app registration posture, identity posture, data security analysis, email threat posture, MITRE ATT&CK coverage, ingestion analysis, detection authoring, threat pulse scanning, SVG dashboards, local agents, cross-tenant hunts, BEC, ransomware, and telemetry health
 - **6 MCP Server Integrations** — Sentinel Data Lake (incl. Exposure Graph tools), Graph API, Defender XDR Triage, KQL Search, Microsoft Learn, Azure MCP Server
 - **3 Local MCP Apps** — Interactive heatmaps, geographic attack maps, incident commenting
 - **Python Utilities** — HTML report generation with IP enrichment (geolocation, VPN detection, abuse scores, Shodan port/service/CVE intelligence)
@@ -107,7 +157,7 @@ copy .vscode\mcp.json.template .vscode\mcp.json
 
 This system uses **[VS Code Agent Skills](https://code.visualstudio.com/docs/copilot/customization/agent-skills)** to provide modular, domain-specific investigation workflows. Skills are automatically detected based on keywords in your prompts.
 
-### Available Skills (25)
+### Available Skills
 
 | Category | Skill | Description | Trigger Keywords |
 |----------|-------|-------------|------------------|
@@ -236,7 +286,7 @@ security-investigator/
 │   ├── manifests/               # Auto-generated discovery indexes
 │   │   ├── discovery-manifest.yaml  # Query file + skill index (domains, MITRE, prompts)
 │   │   └── build_manifest.py        # Manifest generator script
-│   └── skills/                  # 25 Agent Skills (modular investigation workflows)
+│   └── skills/                  # Agent Skills (modular investigation workflows)
 │       ├── ai-agent-posture/
 │       ├── app-registration-posture/
 │       ├── authentication-tracing/

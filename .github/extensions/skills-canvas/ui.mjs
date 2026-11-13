@@ -9,7 +9,7 @@
 
 import { memoryPromptTemplate, recordPromptTemplate, compactPromptTemplate, DEFAULT_MEMORY_PROMPT, DEFAULT_RECORD_PROMPT, DEFAULT_COMPACT_PROMPT } from "./prefs.mjs";
 
-export function renderPage(prefs = {}) {
+export function renderPage(prefs = {}, scope = { registered: false, revision: "" }) {
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -34,7 +34,7 @@ export function renderPage(prefs = {}) {
   header {
     display: flex; align-items: center; gap: 12px;
     padding: 12px 16px; border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, #131c2c, #0d131e);
+    background: linear-gradient(180deg, #131c2c, #0d131e); flex-wrap: wrap;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   header .sat { font-size: 18px; }
@@ -44,6 +44,13 @@ export function renderPage(prefs = {}) {
     padding: 5px 10px; border-radius: 999px; font-size: 12px; color: var(--muted);
   }
   .tenant b { color: var(--text); }
+  .scope-controls { flex-basis: 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .scope-controls[hidden], .cross-hunt[hidden] { display: none; }
+  .scope-controls select, .scope-controls input { max-width: 240px; background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 5px; }
+  .scope-banner { flex-basis: 100%; color: var(--warn); font-size: 12px; overflow-wrap: anywhere; }
+  .cross-hunt { border: 1px solid var(--border); padding: 10px; margin-bottom: 12px; border-radius: 8px; }
+  .cross-hunt label { display: block; padding: 4px; }
+  .cross-hunt textarea { width: 100%; min-height: 65px; background: var(--panel); color: var(--text); }
   .refresh {
     background: var(--chip); border: 1px solid var(--border); color: var(--muted);
     border-radius: 8px; padding: 6px 9px; cursor: pointer; font-size: 13px;
@@ -629,6 +636,13 @@ export function renderPage(prefs = {}) {
     <h1>Security Investigator — Mission Control</h1>
     <span class="tenant">tenant <b id="tenant">…</b></span>
     <button class="refresh" id="refresh" title="Reload manifest">⟳</button>
+    <div class="scope-controls" id="scopeControls">
+      <label>Profile <select id="profileSelect" aria-label="Tenant profile"></select></label>
+      <label>Workspace <select id="workspaceSelect" aria-label="Sentinel workspace"></select></label>
+      <label>Case <input id="caseSelect" placeholder="Optional case ID" /></label>
+      <button class="refresh" id="contextSelect">Select context</button>
+    </div>
+    <div class="scope-banner" id="scopeBanner" role="status"></div>
   </header>
 
   <div class="body">
@@ -644,6 +658,17 @@ export function renderPage(prefs = {}) {
         <h2>Recently launched</h2>
         <div id="recent"><div class="empty">Nothing launched yet.</div></div>
       </div>
+      <details class="cross-hunt" id="crossHunt">
+        <summary>Cross-tenant hunt (read-only)</summary>
+        <p>Explicitly select targets; no authentication or query runs on selection.</p>
+        <p>This coordinator reuses the current chat. Profile selection does not isolate prior messages, model context or MCP authentication. Use separate chat/client sessions for strict customer transcript separation; aggregate only explicitly permitted coverage/status.</p>
+        <p>Secure case contexts require POSIX <code>O_NOFOLLOW</code>, <code>O_DIRECTORY</code> and directory-descriptor operations. Unsupported platforms/path-validation failures must be recorded as unavailable/error, never clean; no unsafe fallback.</p>
+        <div id="crossTargets"></div>
+        <label>Hunt / indicator<textarea id="crossRequest" placeholder="Indicator or hunt request"></textarea></label>
+        <label>Days <input id="crossLookback" type="number" min="1" max="365" value="7" /></label>
+        <button class="refresh" id="crossLaunch">Launch selected targets</button>
+        <div id="crossStatus" role="status"></div>
+      </details>
     </aside>
     <div class="rail-resize" id="railResize" title="Drag to resize"></div>
 
@@ -1063,6 +1088,24 @@ export function renderPage(prefs = {}) {
 // server-side and inlined here; we seed localStorage from them before any
 // module-level init reads it, then mirror later writes back to disk. Every
 // existing localStorage call site keeps working unchanged.
+const MC_SCOPE = ${JSON.stringify(scope).replace(/</g, "\\u003c")};
+function apiUrl(url) {
+  if (typeof url !== "string" || url.indexOf("/api/") !== 0) return url;
+  return url + (url.indexOf("?") >= 0 ? "&" : "?") + "mcContext=" + encodeURIComponent(MC_SCOPE.revision || "");
+}
+const nativeFetch = window.fetch.bind(window);
+window.fetch = function (url, options) {
+  if (typeof url === "string" && url.indexOf("/api/") === 0) {
+    options = Object.assign({}, options || {});
+    options.headers = Object.assign({}, options.headers || {}, { "X-MC-Context": MC_SCOPE.revision || "" });
+  }
+  return nativeFetch(url, options).then(function (response) {
+    if (response.status === 409) {
+      document.getElementById("scopeBanner").textContent = "Context changed or operation blocked. Reload to continue; no result was written to another tenant.";
+    }
+    return response;
+  });
+};
 (function () {
   var seed = ${JSON.stringify(prefs || {})};
   var ls;
@@ -1071,6 +1114,11 @@ export function renderPage(prefs = {}) {
   var nativeSet = ls.setItem.bind(ls);
   var nativeRemove = ls.removeItem.bind(ls);
   try {
+    // A profile switch reloads this document. Never retain another profile's
+    // origin-local cache (the HTTP port itself does not change on selection).
+    for (var n = ls.length - 1; n >= 0; n--) {
+      var old = ls.key(n); if (old && old.indexOf("mc.") === 0) nativeRemove(old);
+    }
     for (var k in seed) {
       if (Object.prototype.hasOwnProperty.call(seed, k)) nativeSet(k, seed[k]);
     }
@@ -1108,7 +1156,7 @@ export function renderPage(prefs = {}) {
     if (!pending) return;
     try {
       var blob = new Blob([JSON.stringify({ patch: pending })], { type: "application/json" });
-      navigator.sendBeacon("/api/prefs", blob);
+      navigator.sendBeacon(apiUrl("/api/prefs"), blob);
       pending = null;
     } catch (e) {}
   });
@@ -1182,6 +1230,7 @@ function fillOutput(el) { if (el) el.innerHTML = outputOptionsHTML(); }
 async function load() {
   const res = await fetch("/api/data");
   DATA = await res.json();
+  if (!res.ok) return;
   document.getElementById("tenant").textContent = DATA.tenant.name || "unknown";
   const err = document.getElementById("errbanner");
   err.innerHTML = DATA.error ? '<div class="banner">⚠️ ' + DATA.error + '</div>' : "";
@@ -1200,6 +1249,77 @@ async function load() {
   // DATA.tenant is still empty; its unchanged-payload guard then never re-syncs.
   syncCompactBtn();
 }
+
+function initContextPicker() {
+  const controls = document.getElementById("scopeControls");
+  const banner = document.getElementById("scopeBanner");
+  controls.hidden = !MC_SCOPE.registered;
+  document.getElementById("crossHunt").hidden = !MC_SCOPE.registered;
+  const c = MC_SCOPE.selected;
+  banner.textContent = MC_SCOPE.error || (MC_SCOPE.registered
+    ? (c ? "PROFILE " + c.key + " | Tenant " + c.tenantId + " | Workspace " + (c.workspace ? c.workspace.id : "not selected") + " | Case " + c.caseId + " | Connections are references, authentication unverified."
+         : "Select an explicit tenant profile and workspace before launching. Legacy findings are not assigned to a customer.")
+    : "Legacy single-tenant mode — shared legacy board. Configure profiles for isolated customer state.");
+  if (MC_SCOPE.registered) banner.textContent += " | Shared chat/model context and tool authentication are NOT isolated by profile selection; use separate chat/client sessions for strict customer boundaries.";
+  const profile = document.getElementById("profileSelect");
+  profile.add(new Option("Select profile…", ""));
+  (MC_SCOPE.profiles || []).forEach(p => profile.add(new Option(p.key + " — " + p.tenantId, p.key)));
+  if (c) profile.value = c.key;
+  function workspaces() {
+    const select = document.getElementById("workspaceSelect");
+    select.replaceChildren(new Option("Select workspace…", ""));
+    const p = (MC_SCOPE.profiles || []).find(p => p.key === profile.value);
+    (p ? p.workspaces : []).forEach(w => select.add(new Option(w.name + " — " + w.id, w.id)));
+    if (c && c.key === profile.value && c.workspace) select.value = c.workspace.id;
+  }
+  profile.onchange = workspaces; workspaces();
+  if (c) document.getElementById("caseSelect").value = c.caseId;
+  document.getElementById("contextSelect").onclick = async function () {
+    const res = await fetch("/api/context", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile.value, workspaceId: document.getElementById("workspaceSelect").value,
+        caseId: document.getElementById("caseSelect").value.trim() }) });
+    const j = await res.json();
+    if (!res.ok || !j.ok) { toast(j.error || "Context selection failed"); return; }
+    location.reload();
+  };
+  const host = document.getElementById("crossTargets");
+  (MC_SCOPE.profiles || []).forEach(p => p.workspaces.forEach(w => {
+    const label = document.createElement("label");
+    const box = document.createElement("input"); box.type = "checkbox";
+    box.dataset.profile = p.key; box.dataset.workspace = w.id;
+    label.append(box, document.createTextNode(p.key + " / " + w.name + " (" + w.id + ")")); host.append(label);
+  }));
+  let batchBindings = [];
+  async function statuses() {
+    if (!batchBindings.length) return;
+    const res = await fetch("/api/hunt-status", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bindings: batchBindings }) });
+    const j = await res.json(); if (!res.ok) return;
+    const target = document.getElementById("crossStatus"); target.replaceChildren();
+    (j.hunts || []).forEach(h => {
+      const row = document.createElement("p");
+      row.textContent = h.profile + " / " + h.workspaceId + ": " + h.status + (h.detail ? " — " + h.detail : "");
+      target.append(row);
+    });
+  }
+  document.getElementById("crossLaunch").onclick = async function () {
+    const targets = [...host.querySelectorAll("input:checked")].map(b => ({ profile: b.dataset.profile, workspaceId: b.dataset.workspace }));
+    if (!targets.length) { toast("Explicitly select profile/workspace targets"); return; }
+    const button = document.getElementById("crossLaunch"); button.disabled = true;
+    try {
+      const res = await fetch("/api/cross-tenant-hunt", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: targets, request: document.getElementById("crossRequest").value,
+          lookbackDays: Number(document.getElementById("crossLookback").value),
+          caseId: document.getElementById("caseSelect").value.trim() }) });
+      const j = await res.json();
+      batchBindings = (j.results || []).filter(r => r.binding).map(r => r.binding);
+      document.getElementById("crossStatus").textContent = (j.results || []).filter(r => !r.ok).map(r => r.profile + ": ERROR — " + r.error).join("; ") || j.error || "Targets queued with frozen contexts.";
+      if (j.ok) await statuses();
+    } finally { button.disabled = false; }
+  };
+  setInterval(() => { void statuses().catch(() => {}); }, 4000);
+}
+initContextPicker();
 
 function renderDomains() {
   const host = document.getElementById("domains");
@@ -1698,6 +1818,10 @@ function doCompact() {
     .replace(/[ \\t]+$/gm, "")
     .replace(/\\n{3,}/g, "\\n\\n")
     .trim();
+  if (MC_SCOPE.registered && MC_SCOPE.selected && DATA.contextStatePath) {
+    p = p.split(".mission-control/findings.json").join(DATA.contextStatePath + "/findings.json");
+    p += "\\nOnly use this profile's findings and cited tenant reports; never sweep reports/ or another tenant's board.";
+  }
   if (!p) { toast("Compact prompt is empty (⚙ → Compact prompt)"); return; }
   closeCompact();
   openCompose("context-memory-review", "", p, true);
@@ -1736,7 +1860,7 @@ function openMemPreview() {
   document.getElementById("reportTitle").textContent = file;
   document.getElementById("reportPath").textContent = "~/.copilot/memories/repo/" + file;
   document.getElementById("reportRaw").href = q + "?raw=1";
-  document.getElementById("reportFrame").src = q + "?t=" + Date.now();
+  document.getElementById("reportFrame").src = apiUrl(q + "?t=" + Date.now());
   document.getElementById("reportModal").classList.add("on");
 }
 document.getElementById("memOpen").onclick = openMemPreview;
@@ -3703,7 +3827,7 @@ function openReport(pathRel, label) {
   document.getElementById("reportTitle").textContent = label || (pathRel || "").split(/[\\/]/).pop();
   document.getElementById("reportPath").textContent = pathRel || "";
   document.getElementById("reportRaw").href = q + "&raw=1";
-  document.getElementById("reportFrame").src = q;
+  document.getElementById("reportFrame").src = apiUrl(q);
   document.getElementById("reportModal").classList.add("on");
 }
 function closeReport() {
@@ -3897,7 +4021,7 @@ function selectReport(f) {
   repSelected = { path: f.path, name: f.name };
   const q = "/api/report?path=" + encodeURIComponent(f.path);
   const frame = document.getElementById("repFrame");
-  frame.src = q;
+  frame.src = apiUrl(q);
   frame.style.display = "";
   document.getElementById("repBlank").style.display = "none";
   document.getElementById("repTitle").textContent = f.name;

@@ -32,6 +32,13 @@ export function initAutopilot(deps) {
     hooks = deps || null;
 }
 
+/** A stopped chain's ids/counters belong to its tenant, not the next picker. */
+export function resetAutopilotContext() {
+    if (state && state.status !== "off") return false;
+    state = null;
+    return true;
+}
+
 function rank(sev) {
     const r = SEVERITY_RANK[String(sev || "").toLowerCase()];
     return Number.isFinite(r) ? r : SEVERITY_RANK.info;

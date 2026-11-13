@@ -1,5 +1,40 @@
 # Reusable plan: configure MCP tenant selection
 
+## Multi-tenant investigation extension
+
+The original runbook below configures **one target tenant at a time**. It is
+not the orchestration model for simultaneous customer investigations.
+
+For tenant profiles, immutable run contexts, and authenticated read-only
+validation, use [Tenant contexts](tenant-contexts.md). Mission Control uses
+explicit tenant/workspace launch contexts and scoped state; the
+[cross-tenant-hunt workflow](../.github/skills/cross-tenant-hunt/SKILL.md)
+coordinates selected scopes without assuming one shared authenticated session
+can access every tenant.
+
+Key acceptance boundaries for multi-tenant operation:
+
+- Legacy root configuration still works when no profile registry is configured.
+- Multiple profiles/workspaces require explicit selection. A failed operation
+  must not switch tenants or borrow another profile's missing settings.
+- Every run freezes profile, tenant, workspace, connection references, case ID,
+  and time bounds. Changing the UI selection does not retarget that run.
+- Local syntax/profile validation, authenticated Azure/Graph checks, and MCP
+  session verification are separate outcomes. Report each truthfully.
+- Reports, imported agent content, context memory, and Mission Control state
+  remain tenant-scoped. Unscoped legacy findings are not customer evidence.
+- Cross-tenant hunts are read-only. Report unavailable, failed, unverified,
+  and successfully searched scopes separately; aggregate only permitted data.
+- Triage guest/delegated access remains unsupported. A tenant header does not
+  remove that limitation or enable workspace selection for Triage.
+- Test equal incident/entity IDs in different tenants, concurrent launches,
+  stale results after a tenant switch, expired/denied credentials, and
+  unsupported Triage before enabling production orchestration.
+
+No live authentication or access is implied by implementing these facilities.
+The remaining sections retain the narrow header-configuration procedure for
+an individual connection.
+
 ## Goal
 
 Reproduce the changes made in the original project:

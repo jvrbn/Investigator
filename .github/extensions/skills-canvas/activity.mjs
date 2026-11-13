@@ -16,6 +16,7 @@ import { readFile, writeFile, mkdir, readdir, unlink, rename } from "node:fs/pro
 import path from "node:path";
 import { stateRoot } from "./paths.mjs";
 import { autopilotSnapshot } from "./autopilot.mjs";
+import { stateScope } from "./tenant-context.mjs";
 
 // Coalesce disk writes: tool.execution_start / assistant.usage fire in bursts.
 const WRITE_THROTTLE_MS = 1500;
@@ -58,7 +59,9 @@ let heartbeatTimer = null;
 /** Initialise the ledger for this process. Safe to call more than once. */
 export function initActivity(repoRoot, sessionId) {
     const id = String(sessionId || process.env.SESSION_ID || "unknown");
-    if (state && state.sessionId === id) return id;
+    if (state && state.sessionId === id && stateRoot(state.repoRoot) === stateRoot(repoRoot)) return id;
+    if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+    stopHeartbeat();
     state = {
         repoRoot,
         sessionId: id,
@@ -92,6 +95,11 @@ export function activeRun() {
 }
 
 function snapshot() {
+    const sameScope = (entry) => {
+        const c = entry?.binding?.context;
+        if (typeof state.repoRoot === "string") return !c || c.legacy;
+        return c && stateRoot(stateScope(state.repoRoot.repoRoot, c)) === stateRoot(state.repoRoot);
+    };
     return {
         sessionId: state.sessionId,
         pid: state.pid,
@@ -101,7 +109,7 @@ function snapshot() {
         run: state.run ? { ...state.run } : null,
         // The composed prompt stays in memory: only this process ever promotes
         // its own queue, and prompts can be large. Readers just need the label.
-        queue: state.queue.map((q) => ({
+        queue: state.queue.filter(sameScope).map((q) => ({
             queueId: q.queueId,
             skill: q.skill,
             entity: q.entity,
@@ -109,7 +117,7 @@ function snapshot() {
             queuedAt: q.queuedAt,
             autopilot: q.autopilot || null,
         })),
-        recent: state.recent.slice(0, MAX_RECENT),
+        recent: state.recent.filter(sameScope).slice(0, MAX_RECENT),
         // Read live rather than mirrored through a setter: autopilot state changes
         // in a dozen places and a stale mirror would be worse than no mirror.
         autopilot: autopilotSnapshot(),
@@ -127,11 +135,13 @@ async function flush() {
     lastWriteAt = Date.now();
     pendingWrite = false;
     const file = activityPath(state.repoRoot, state.sessionId);
+    const root = state.repoRoot;
+    const payload = JSON.stringify(snapshot(), null, 2);
     try {
-        await mkdir(activityDir(state.repoRoot), { recursive: true });
+        await mkdir(activityDir(root), { recursive: true });
         // Write-then-rename so readers never observe a partial JSON document.
         const tmp = file + ".tmp";
-        await writeFile(tmp, JSON.stringify(snapshot(), null, 2), "utf8");
+        await writeFile(tmp, payload, "utf8");
         await rename(tmp, file);
     } catch { /* ledger is best-effort; never break the session */ }
     writing = false;
@@ -212,6 +222,10 @@ export function setSessionTitle(title) {
 export function beginRun(info) {
     if (!state) return null;
     if (state.run) endRun({ reason: "superseded" });
+    if (info?.stateScope) {
+        if (stateRoot(state.repoRoot) !== stateRoot(info.stateScope)) state.title = "";
+        state.repoRoot = info.stateScope;
+    }
     const now = Date.now();
     state.run = {
         runId: state.sessionId.slice(0, 8) + "-" + now.toString(36),
@@ -227,6 +241,8 @@ export function beginRun(info) {
         // Carried through to the finding recorded during the run, which is what
         // makes a chain reconstructible from the findings ledger alone.
         autopilot: info?.autopilot || null,
+        binding: info?.binding || null,
+        hunt: info?.hunt === true,
         startedAt: now,
         phase: "Starting…",
         tool: "",
@@ -261,6 +277,8 @@ export function enqueueRun(spec) {
         },
         prompt: String(spec?.prompt || ""),
         autopilot: spec?.autopilot || null,
+        binding: spec?.binding || null,
+        hunt: spec?.hunt === true,
         queuedAt: now,
     });
     schedule(true);
@@ -369,6 +387,7 @@ export function endRun(opts) {
         findingId: r.findingId,
         recorded: !!r.findingId,
         autopilot: r.autopilot || null,
+        binding: r.binding || null,
         error: r.error,
     });
     state.recent = state.recent.slice(0, MAX_RECENT);

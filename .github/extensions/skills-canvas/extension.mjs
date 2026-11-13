@@ -7,16 +7,18 @@
 
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { readFile, writeFile, readdir } from "node:fs/promises";
+import { readFile, writeFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { joinSession, createCanvas } from "@github/copilot-sdk/extension";
 import { renderPage } from "./ui.mjs";
 import { loadCanvasData, composePrompt, lookbackPhrase, outputPhrase } from "./manifest.mjs";
 import { loadPrefs, savePrefs, memoryPromptTemplate, memoryEnabled, recordPromptTemplate, DEFAULT_MEMORY_PROMPT, DEFAULT_RECORD_PROMPT, autopilotLimits, AUTOPILOT_DEFAULTS, AUTOPILOT_CEILINGS, AUTOPILOT_KEYS } from "./prefs.mjs";
 import { renderMarkdown, htmlReportPage } from "./md.mjs";
-import { listReports } from "./reports.mjs";
-import { migrateLegacyState } from "./paths.mjs";
+import { listReports, reportMatchesTenant } from "./reports.mjs";
+import { migrateLegacyState, stateRoot } from "./paths.mjs";
+import { readRegistry, legacyContext, selectContext, stateScope, inTenant, currentTenant, LaunchBindings, bindingFields, launchEnvelope, huntStatuses, updateHuntStatus } from "./tenant-context.mjs";
 import {
     loadFindings,
     addFinding,
@@ -47,6 +49,7 @@ import {
     beginRun,
     enqueueRun,
     takeNextQueued,
+    queuedRuns,
     dropQueued,
     dropAutopilotQueued,
     flushActivity,
@@ -62,6 +65,7 @@ import {
 } from "./activity.mjs";
 import {
     initAutopilot,
+    resetAutopilotContext,
     applyAutopilotLimits,
     autopilotSnapshot,
     enableAutopilot,
@@ -78,7 +82,37 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // .github/extensions/skills-canvas -> repo root is three levels up.
 const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
 // Move pre-existing state out of .github/extensions/ before anything reads it.
-migrateLegacyState(REPO_ROOT);
+let registry;
+let registryError = "";
+try { registry = await readRegistry(REPO_ROOT); }
+catch (err) { registry = { registered: true, profiles: [] }; registryError = err.message; }
+if (!registry.registered) migrateLegacyState(REPO_ROOT);
+let selectedContext = registry.registered ? null : await legacyContext(REPO_ROOT);
+let selectionRevision = randomUUID();
+const bindings = new LaunchBindings();
+let hasCanvasLaunch = false;
+let launchesPending = 0;
+// Legacy data stays at the legacy root. It is never imported into a profile.
+function store() { return stateScope(REPO_ROOT, currentTenant() ?? selectedContext); }
+function selectionPayload() {
+    return { registered: registry.registered, profiles: registry.profiles, selected: selectedContext,
+        revision: selectionRevision, error: registryError || null };
+}
+function requireSelection() {
+    if (registryError) throw new Error(registryError);
+    if (registry.registered && !selectedContext) throw new Error("Select a tenant profile and workspace first");
+}
+
+async function canvasData() {
+    const data = await loadCanvasData(REPO_ROOT);
+    const c = currentTenant() ?? selectedContext;
+    if (registry.registered) {
+        data.tenant = c ? { name: c.key, tenantId: c.tenantId, memoryFile: c.memoryFile,
+            memoryFileConfigured: !!c.memoryFile } : { name: "Selection required", memoryFile: "" };
+    }
+    data.contextStatePath = c ? path.relative(REPO_ROOT, stateRoot(stateScope(REPO_ROOT, c))).replaceAll(path.sep, "/") : ".mission-control";
+    return data;
+}
 
 // Set after joinSession resolves; HTTP handlers read it at request time.
 let sessionRef = null;
@@ -105,6 +139,7 @@ let lastFindingNaiu = 0;
 // may mix models within a run).
 const cumulativeByModel = new Map();
 const lastByModel = new Map();
+let runBaselineByModel = new Map();
 
 // Per-run cost baseline: cumulativeNaiu at the moment a run opened, so the live
 // strip can show credits consumed by THIS investigation rather than the session
@@ -241,12 +276,18 @@ async function setMemoryFile(rawFile) {
     } catch {
         return { ok: false, error: "config.json not found — copy config.json.template to config.json first" };
     }
-    cfg.memory_file = name;
+    const c = currentTenant() ?? selectedContext;
+    if (registry.registered) {
+        if (!c || cfg.tenants?.[c.key]?.tenant_id?.toLowerCase() !== c.tenantId) {
+            return { ok: false, error: "Profile changed; reselect before editing memory" };
+        }
+        cfg.tenants[c.key].memory_file = name;
+    } else cfg.memory_file = name;
     await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
 
     const written = ["config.json"];
     try {
-        const tenantId = cfg.tenant_id || null;
+        const tenantId = registry.registered ? null : cfg.tenant_id || null;
         if (tenantId && !/^YOUR_/.test(tenantId)) {
             for (const f of await readdir(REPO_ROOT)) {
                 const m = /^config\.json\.([A-Za-z0-9_-]+)$/.exec(f);
@@ -268,6 +309,12 @@ async function setMemoryFile(rawFile) {
         /* ignore */
     }
     cache = null; // force /api/data to re-read config on next load
+    if (registry.registered) {
+        registry = await readRegistry(REPO_ROOT);
+        if (selectedContext?.key === c.key && selectedContext?.tenantId === c.tenantId && selectedContext?.caseId === c.caseId) {
+            selectedContext = selectContext(registry, c.key, c.workspace?.id, c.caseId);
+        }
+    }
     return { ok: true, memoryFile: name, written };
 }
 
@@ -308,6 +355,9 @@ function withRecordDirective(prompt, prefs) {
  */
 function withMemoryPreamble(prompt, prefs) {
     if (!prompt) return prompt;
+    // Registered profiles get a mandatory exact memory directive in their
+    // frozen envelope, never a customizable/shared memory fallback.
+    if (registry.registered) return prompt;
     if (!memoryEnabled(prefs)) return prompt;
     const file = String(cache?.tenant?.memoryFile || "").trim();
     if (!file) return prompt;
@@ -318,6 +368,10 @@ function withMemoryPreamble(prompt, prefs) {
 }
 
 async function launchSkill(name, entity, promptOverride, lookback, meta) {
+    requireSelection();
+    const context = currentTenant() ?? selectedContext;
+    launchesPending++;
+    try { return await inTenant(context, async () => {
     // fleet/output must reach composeFor or the directive never makes it into
     // the prompt — the ledger would badge a run "Markdown" while the agent was
     // only ever asked for an inline answer.
@@ -335,7 +389,11 @@ async function launchSkill(name, entity, promptOverride, lookback, meta) {
     // modal's preview, where the client owns the preamble so the analyst can
     // edit it. This is the send path — the last point every launch passes
     // through, whether it came from a click, a quick-launch or autopilot.
-    const prompt = withMemoryPreamble(composed.prompt, await loadPrefs(REPO_ROOT));
+    const binding = bindings.capture(context, name, sessionRef.sessionId || "");
+    hasCanvasLaunch = true;
+    if (meta?.hunt) await updateHuntStatus(REPO_ROOT, binding, "pending");
+    const prompt = launchEnvelope(binding) + "\n\n---\n" +
+        withMemoryPreamble(composed.prompt, await loadPrefs(store()));
     const spec = {
         skill: name,
         entity,
@@ -343,6 +401,8 @@ async function launchSkill(name, entity, promptOverride, lookback, meta) {
         output: meta?.output || "",
         fleet: meta?.fleet === true,
         prompt,
+        binding,
+        hunt: meta?.hunt === true,
         // { depth, parentFindingId } when autopilot chased this. Rides through the
         // queue and the ledger so the finding it eventually produces knows its parent.
         autopilot: meta?.autopilot || null,
@@ -354,17 +414,21 @@ async function launchSkill(name, entity, promptOverride, lookback, meta) {
     // everything after. Hold it instead and dispatch on run end.
     if (hasActiveRun()) {
         const position = enqueueRun(spec);
-        if (!position) return { ok: false, error: "Queue is full — wait for the running investigation to finish" };
+        if (!position) {
+            if (spec.hunt) await updateHuntStatus(REPO_ROOT, binding, "error", "Queue is full");
+            return { ok: false, binding: bindingFields(binding), error: "Queue is full — wait for the running investigation to finish" };
+        }
         try {
             await sessionRef.log(`🕒 Mission Control queued: ${name}${entity ? ` (${entity})` : ""} (#${position})`, { ephemeral: true });
         } catch { /* logging is best-effort */ }
         if ((await knownSkillNames()).has(name)) recordRun(name, entity);
-        return { ok: true, queued: true, position, recent: recentPayload() };
+        return { ok: true, queued: true, position, binding: bindingFields(binding), recent: recentPayload() };
     }
     const sent = await dispatchRun(spec);
-    if (!sent.ok) return sent;
+    if (!sent.ok) return { ...sent, binding: bindingFields(binding) };
     if ((await knownSkillNames()).has(name)) recordRun(name, entity);
-    return { ok: true, recent: recentPayload() };
+    return { ok: true, binding: bindingFields(binding), recent: recentPayload() };
+    }); } finally { launchesPending--; }
 }
 
 /**
@@ -375,8 +439,6 @@ async function launchSkill(name, entity, promptOverride, lookback, meta) {
 async function dispatchRun(spec) {
     if (!sessionRef) return { ok: false, error: "Session not connected yet" };
     try {
-        await sessionRef.send({ prompt: spec.prompt });
-        await sessionRef.log(`🛰️ Mission Control launched: ${spec.skill}${spec.entity ? ` (${spec.entity})` : ""}`, { ephemeral: true });
         // Open a live run in the cross-session activity ledger. This is the
         // 100%-reliable start signal: at send time we already know the skill,
         // entity and scope, and it needs no cooperation from the agent. The
@@ -386,6 +448,7 @@ async function dispatchRun(spec) {
         try {
             cancelEnd(); // a close scheduled by the previous run must not hit this one
             runBaselineNaiu = cumulativeNaiu;
+            runBaselineByModel = new Map(cumulativeByModel);
             activeRunIsAutopilot = !!spec.autopilot;
             runReportPaths = [];
             beginRun({
@@ -396,10 +459,20 @@ async function dispatchRun(spec) {
                 fleet: spec.fleet === true,
                 source: "canvas",
                 autopilot: spec.autopilot || null,
+                binding: spec.binding || null,
+                hunt: spec.hunt === true,
+                stateScope: stateScope(REPO_ROOT, spec.binding?.context),
             });
         } catch { /* ledger is best-effort */ }
+        await sessionRef.send({ prompt: spec.prompt });
+        if (spec.hunt) await updateHuntStatus(REPO_ROOT, spec.binding, "running");
+        try {
+            await sessionRef.log(`🛰️ Mission Control launched: ${spec.skill}${spec.entity ? ` (${spec.entity})` : ""}`, { ephemeral: true });
+        } catch { /* logging must not turn a successfully sent hunt into an error */ }
         return { ok: true };
     } catch (err) {
+        if (activeRun()?.binding?.correlationId === spec.binding?.correlationId) endRun({ error: err.message });
+        if (spec.hunt) await updateHuntStatus(REPO_ROOT, spec.binding, "error", err.message);
         return { ok: false, error: err.message };
     }
 }
@@ -429,6 +502,8 @@ async function promoteQueued() {
         fleet: next.scope?.fleet === true,
         prompt: next.prompt,
         autopilot: next.autopilot || null,
+        binding: next.binding || null,
+        hunt: next.hunt === true,
     });
     if (!sent.ok) {
         try { await sessionRef?.log(`⚠️ Mission Control could not start queued ${next.skill}: ${sent.error}`, { ephemeral: true }); } catch { /* best-effort */ }
@@ -442,7 +517,7 @@ async function promoteQueued() {
 // before submitting). Keeping the lookback-injection logic here means the
 // preview and the eventual send stay identical.
 async function composeFor(name, entity, promptOverride, lookback, fleet, output) {
-    if (!cache) cache = await loadCanvasData(REPO_ROOT);
+    if (!cache) cache = await canvasData();
     const skill = (cache.skills || []).find((s) => s.name === name);
     // A tailored, agent-authored prompt (or an auto-derived context prompt) is
     // used verbatim. Only fall back to the skill's generic manifest prompt when
@@ -465,17 +540,17 @@ async function composeFor(name, entity, promptOverride, lookback, fleet, output)
         if (outPhrase && !prompt.includes(outPhrase)) prompt = `${prompt} — ${outPhrase}`;
     }
     if (!prompt) return { error: `Unknown skill: ${name}` };
-    return { skill: name, prompt: withRecordDirective(prompt, await loadPrefs(REPO_ROOT)) };
+    return { skill: name, prompt: withRecordDirective(prompt, await loadPrefs(store())) };
 }
 
 /** Names of launchable skills — used to validate auto-recommended follow-ups. */
 async function knownSkillNames() {
-    if (!cache) cache = await loadCanvasData(REPO_ROOT);
+    if (!cache) cache = await canvasData();
     return new Set((cache.skills || []).map((s) => s.name));
 }
 
 async function findingsPayload() {
-    const findings = (await loadFindings(REPO_ROOT)).map((f) => ({ ...f, ago: relAgo(f.ts) }));
+    const findings = (await loadFindings(store())).map((f) => ({ ...f, ago: relAgo(f.ts) }));
     // An emptied board leaves a finished chain's trail describing findings that
     // are no longer there — clear it with them. A no-op unless autopilot is off,
     // so archiving during a live chain can't erase its state.
@@ -486,10 +561,10 @@ async function findingsPayload() {
 // Persistent cost ledger payload. Auto-seeds from the current findings on first
 // fetch (when the ledger is empty) so historical spend is carried over once.
 async function costingPayload() {
-    let rows = await loadCosting(REPO_ROOT);
+    let rows = await loadCosting(store());
     if (!rows.length) {
         try {
-            rows = await seedCostingFromFindings(REPO_ROOT, await loadFindings(REPO_ROOT));
+            rows = await seedCostingFromFindings(store(), await loadFindings(store()));
         } catch {
             rows = [];
         }
@@ -513,6 +588,20 @@ async function serveReport(rel, raw, res) {
         res.writeHead(403);
         res.end("forbidden");
         return;
+    }
+    if (registry.registered) {
+        const c = currentTenant() ?? selectedContext;
+        const allowed = path.join(REPO_ROOT, "reports", "tenants", c.key) + path.sep;
+        const library = path.join(REPO_ROOT, "queries") + path.sep;
+        const canonical = await realpath(abs);
+        const reportBase = await realpath(path.join(REPO_ROOT, "reports", "tenants", c.key)).catch(() => "");
+        const reportRootValid = reportBase === path.join(REPO_ROOT, "reports", "tenants", c.key);
+        const queryBase = await realpath(path.join(REPO_ROOT, "queries")).catch(() => "");
+        const matchesTenant = await reportMatchesTenant(REPO_ROOT, clean, c.key, c.tenantId);
+        if (!(abs.startsWith(allowed) && reportRootValid && canonical.startsWith(reportBase + path.sep) && matchesTenant) &&
+            !(abs.startsWith(library) && queryBase && canonical.startsWith(queryBase + path.sep))) {
+            res.writeHead(403); res.end("Report is outside the selected tenant"); return;
+        }
     }
     let data;
     try {
@@ -555,8 +644,9 @@ async function serveReport(rel, raw, res) {
 // manifest (config.json memory_file, or a derived default) — never from the client
 // — and is reduced to a basename, so there's no path-traversal surface.
 async function serveMemFile(raw, res) {
-    if (!cache) cache = await loadCanvasData(REPO_ROOT);
-    const file = String((cache && cache.tenant && cache.tenant.memoryFile) || "").split(/[\\/]/).pop();
+    const c = currentTenant() ?? selectedContext;
+    if (!cache) cache = await canvasData();
+    const file = String((registry.registered ? c?.memoryFile : cache?.tenant?.memoryFile) || "").split(/[\\/]/).pop();
     if (!file) {
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("No memory file configured — click ⚙ in the Findings tab to set one.");
@@ -594,11 +684,113 @@ async function handle(req, res) {
     const url = new URL(req.url, "http://127.0.0.1");
     try {
         if (req.method === "GET" && url.pathname === "/") {
+            const prefs = selectedContext || !registry.registered ? await loadPrefs(store()) : {};
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+            res.end(renderPage(prefs, selectionPayload()));
+            return;
+        }
+        if (req.method === "POST" && url.pathname === "/api/context") {
+            if (req.headers["x-mc-context"] !== selectionRevision) {
+                json(res, 409, { ok: false, error: "Context changed; reload this panel" }); return;
+            }
+            if (launchesPending || hasActiveRun() || queuedRuns().length || autopilotSnapshot()?.status !== "off") {
+                json(res, 409, { ok: false, error: "Finish/cancel queued work and stop autopilot before switching context" }); return;
+            }
+            const body = await readBody(req);
+            registry = await readRegistry(REPO_ROOT);
+            const context = selectContext(registry, body.profile, body.workspaceId, body.caseId);
+            if (!context) { json(res, 400, { ok: false, error: "No tenant registry configured" }); return; }
+            selectedContext = context;
+            registryError = "";
+            selectionRevision = randomUUID();
+            cache = null;
+            recent.length = 0;
+            runReportPaths = [];
+            lastFindingNaiu = cumulativeNaiu;
+            resetAutopilotContext();
+            initActivity(store(), sessionRef?.sessionId || process.env.SESSION_ID || "");
+            json(res, 200, { ok: true, context: selectionPayload() });
+            return;
+        }
+        if (url.pathname.startsWith("/api/")) {
+            const revision = req.headers["x-mc-context"] || url.searchParams.get("mcContext");
+            if (registry.registered && revision !== selectionRevision) {
+                json(res, 409, { ok: false, error: "Context changed; reload this panel" }); return;
+            }
+            if (url.pathname !== "/api/data") requireSelection();
+        }
+        // Capture at request admission, not after awaits or body parsing.
+        return await inTenant(selectedContext, () => handleScoped(req, res, url));
+    } catch (err) {
+        json(res, 400, { ok: false, error: err.message });
+    }
+}
+
+async function handleScoped(req, res, url) {
+    try {
+        if (req.method === "GET" && url.pathname === "/api/hunts") {
+            json(res, 200, { hunts: await huntStatuses(REPO_ROOT, currentTenant() ?? selectedContext) });
+            return;
+        }
+        if (req.method === "POST" && url.pathname === "/api/hunt-status") {
+            const body = await readBody(req);
+            if (!Array.isArray(body.bindings) || body.bindings.length > 10) throw new Error("Provide the original selected launch bindings");
+            const targets = body.bindings.map((b) => bindings.require(b, sessionRef?.sessionId || ""));
+            const rows = await Promise.all(targets.map(async (b) => {
+                const statuses = await huntStatuses(REPO_ROOT, b.context);
+                return statuses.find((r) => r.correlationId === b.correlationId) || { ...bindingFields(b), status: "unavailable" };
+            }));
+            json(res, 200, { hunts: rows });
+            return;
+        }
+        if (req.method === "POST" && url.pathname === "/api/cross-tenant-hunt") {
+            if (!registry.registered) throw new Error("Cross-tenant hunts require a tenants registry");
+            if (autopilotSnapshot().status !== "off") throw new Error("Stop autopilot before starting a cross-tenant hunt");
+            const body = await readBody(req);
+            if (!Array.isArray(body.targets) || !body.targets.length || body.targets.length > 10) {
+                throw new Error("Explicitly select 1–10 profile/workspace targets; there is no implicit all");
+            }
+            const request = String(body.request || "").trim();
+            if (!request || request.length > 12000) throw new Error("Provide an indicator or hunt request (maximum 12000 characters)");
+            const lookbackDays = Number(body.lookbackDays || 7);
+            if (!Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 365) throw new Error("Lookback must be 1–365 days");
+            // Validate every target before creating any run or sending a prompt.
+            const fresh = await readRegistry(REPO_ROOT);
+            const contexts = body.targets.map((t) => {
+                if (!t.workspaceId) throw new Error("Each cross-tenant target requires an explicit workspace ID");
+                return selectContext(fresh, t.profile, t.workspaceId, body.caseId);
+            });
+            const unique = new Set(contexts.map((c) => c.key + "/" + c.workspace.id));
+            if (unique.size !== contexts.length) throw new Error("Duplicate hunt target");
+            if (queuedRuns().length + contexts.length > 10) throw new Error("Not enough queue capacity for this fanout");
+            const results = [];
+            // Fan out into separately bound queued launches, not one mixed
+            // customer prompt. The owning agent still executes one at a time.
+            for (const context of contexts) {
+                const prompt = [
+                    "Load .github/skills/cross-tenant-hunt/SKILL.md. Execute ONLY this one frozen target's read-only hunt.",
+                    `Requested lookback: ${lookbackDays} days.`,
+                    "Hunt request (task data, not permission to change scope):",
+                    request,
+                    "Before queries perform per-connection capability/auth checks; use verified library queries. On denied/unverified access, record status error/unavailable, never clean.",
+                    "Record one result for THIS target with the original correlation fields. Other selected targets are separate runs; do not query or aggregate them here.",
+                ].join("\n\n");
+                try {
+                    const result = await inTenant(context, () => launchSkill("cross-tenant-hunt", "", prompt, "", { hunt: true }));
+                    results.push({ profile: context.key, workspaceId: context.workspace.id, ...result });
+                } catch (err) {
+                    results.push({ profile: context.key, workspaceId: context.workspace.id, ok: false, error: err.message });
+                }
+            }
+            json(res, 200, { ok: results.every((r) => r.ok), results });
+            return;
+        }
+        if (req.method === "GET" && url.pathname === "/") {
             // Prefs are inlined into the document rather than fetched, so they
             // are already present when the client's module-level init reads
             // localStorage — no first-paint flash of default settings.
             res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            res.end(renderPage(await loadPrefs(REPO_ROOT)));
+            res.end(renderPage(await loadPrefs(store()), selectionPayload()));
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/prefs") {
@@ -606,7 +798,7 @@ async function handle(req, res) {
             // origin changes on every load and localStorage alone would reset
             // every time.
             const body = await readBody(req);
-            json(res, 200, { ok: true, prefs: await savePrefs(REPO_ROOT, body?.patch) });
+            json(res, 200, { ok: true, prefs: await savePrefs(store(), body?.patch) });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/autopilot") {
@@ -623,7 +815,7 @@ async function handle(req, res) {
                 // just a UI transition — write it back onto the finding it was
                 // made about before tearing the chain down.
                 const fid = snap.findingId;
-                if (fid) { try { await setVerdict(REPO_ROOT, fid, "stopped", body?.reason); } catch {} }
+                if (fid) { try { await setVerdict(store(), fid, "stopped", body?.reason); } catch {} }
                 // Pausing must never touch analyst-queued work; stopping drops
                 // only the launches autopilot itself added.
                 let dropped = 0;
@@ -633,7 +825,7 @@ async function handle(req, res) {
             } else if (action === "resume") {
                 const fid = snap.findingId;
                 if (fid && snap.reason === "critical") {
-                    try { await setVerdict(REPO_ROOT, fid, "approved", body?.reason); } catch {}
+                    try { await setVerdict(store(), fid, "approved", body?.reason); } catch {}
                 }
                 snap = await resumeAutopilot();
             } else if (action === "clear-trail") {
@@ -647,16 +839,16 @@ async function handle(req, res) {
                 }
                 if (p.minSeverity) patch[AUTOPILOT_KEYS.minSeverity] = String(p.minSeverity);
                 if (p.output) patch[AUTOPILOT_KEYS.output] = String(p.output);
-                const prefs = await savePrefs(REPO_ROOT, patch);
+                const prefs = await savePrefs(store(), patch);
                 const limits = autopilotLimits(prefs);
                 json(res, 200, { ok: true, autopilot: applyAutopilotLimits(limits), limits, prefs });
                 return;
             }
-            json(res, 200, { ok: true, autopilot: snap, limits: autopilotLimits(await loadPrefs(REPO_ROOT)) });
+            json(res, 200, { ok: true, autopilot: snap, limits: autopilotLimits(await loadPrefs(store())) });
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/autopilot") {
-            const prefs = await loadPrefs(REPO_ROOT);
+            const prefs = await loadPrefs(store());
             json(res, 200, {
                 autopilot: autopilotSnapshot(),
                 limits: autopilotLimits(prefs),
@@ -669,19 +861,19 @@ async function handle(req, res) {
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/chain") {
-            json(res, 200, { chain: await chainFor(REPO_ROOT, String(url.searchParams.get("id") || "")) });
+            json(res, 200, { chain: await chainFor(store(), String(url.searchParams.get("id") || "")) });
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/data") {
-            cache = await loadCanvasData(REPO_ROOT);
-            json(res, 200, { ...cache, recent: recentPayload() });
+            cache = await canvasData();
+            json(res, 200, { ...cache, context: selectionPayload(), recent: recentPayload() });
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/activity") {
             // Live cross-session investigation status. Merges every session's
             // ledger file, so this canvas shows runs happening in OTHER sessions
             // too — including sessions that never opened Mission Control.
-            json(res, 200, await readActivity(REPO_ROOT, activitySessionId()));
+            json(res, 200, await readActivity(store(), activitySessionId()));
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/queue/cancel") {
@@ -689,6 +881,8 @@ async function handle(req, res) {
             // session's own queue is cancellable — another session's ledger file
             // is written solely by that session's process.
             const body = await readBody(req);
+            const queued = queuedRuns().find(q => q.queueId === body?.queueId);
+            if (queued?.hunt && queued.binding) await updateHuntStatus(REPO_ROOT, queued.binding, "unavailable", "Cancelled before execution");
             json(res, 200, { ok: dropQueued(String(body?.queueId || "")) });
             return;
         }
@@ -761,18 +955,18 @@ async function handle(req, res) {
         }
         if (req.method === "POST" && url.pathname === "/api/findings/dismiss") {
             const { id } = await readBody(req);
-            await dismissFinding(REPO_ROOT, id);
+            await dismissFinding(store(), id);
             json(res, 200, { ok: true, ...(await findingsPayload()) });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/findings/clear") {
-            await clearFindings(REPO_ROOT);
+            await clearFindings(store());
             json(res, 200, { ok: true, ...(await findingsPayload()) });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/findings/prune") {
             const body = await readBody(req);
-            await pruneFindings(REPO_ROOT, {
+            await pruneFindings(store(), {
                 olderThanDays: body.olderThanDays,
                 severities: body.severities,
             });
@@ -781,7 +975,7 @@ async function handle(req, res) {
         }
         if (req.method === "POST" && url.pathname === "/api/findings/archive") {
             const body = await readBody(req);
-            const r = await archiveFindings(REPO_ROOT, {
+            const r = await archiveFindings(store(), {
                 olderThanDays: body.olderThanDays,
                 severities: body.severities,
             });
@@ -789,39 +983,39 @@ async function handle(req, res) {
                 ok: true,
                 archived: r.archived,
                 file: r.file,
-                archives: await listArchives(REPO_ROOT),
+                archives: await listArchives(store()),
                 ...(await findingsPayload()),
             });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/findings/archive-one") {
             const { id } = await readBody(req);
-            const r = await archiveOneFinding(REPO_ROOT, id);
+            const r = await archiveOneFinding(store(), id);
             json(res, 200, {
                 ok: true,
                 archived: r.archived,
                 file: r.file,
-                archives: await listArchives(REPO_ROOT),
+                archives: await listArchives(store()),
                 ...(await findingsPayload()),
             });
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/findings/all") {
-            const items = (await loadAllFindingsAggregated(REPO_ROOT)).map((f) => ({ ...f, ago: relAgo(f.ts) }));
+            const items = (await loadAllFindingsAggregated(store())).map((f) => ({ ...f, ago: relAgo(f.ts) }));
             json(res, 200, {
                 ok: true,
                 items,
-                archives: await listArchives(REPO_ROOT),
+                archives: await listArchives(store()),
                 summary: summarize(items),
             });
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/findings/archives") {
-            json(res, 200, { archives: await listArchives(REPO_ROOT) });
+            json(res, 200, { archives: await listArchives(store()) });
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/findings/archive") {
-            const a = await readArchive(REPO_ROOT, url.searchParams.get("file") || "");
+            const a = await readArchive(store(), url.searchParams.get("file") || "");
             if (!a) {
                 json(res, 404, { ok: false, error: "archive not found" });
                 return;
@@ -846,7 +1040,9 @@ async function handle(req, res) {
             // Directory listing for the Reports tab browser. The singular
             // /api/report below is what actually serves a file — this route
             // only says which files exist.
-            json(res, 200, await listReports(REPO_ROOT, { refresh: url.searchParams.get("refresh") === "1" }));
+            json(res, 200, await listReports(REPO_ROOT, { refresh: url.searchParams.get("refresh") === "1",
+                tenantKey: registry.registered ? (currentTenant() ?? selectedContext).key : "",
+                tenantId: registry.registered ? (currentTenant() ?? selectedContext).tenantId : "" }));
             return;
         }
         if (req.method === "GET" && url.pathname === "/api/report") {
@@ -889,12 +1085,49 @@ sessionRef = await joinSession({
                         properties: {
                             skill: { type: "string", description: "Skill name, e.g. user-investigation" },
                             entity: { type: "string", description: "Optional target entity" },
+                            correlationId: { type: "string", description: "For follow-ups, the original parent launch correlation, with all matching context fields." },
+                            profile: { type: "string" }, tenantId: { type: "string" },
+                            workspaceId: { type: "string" }, caseId: { type: "string" },
                         },
                         required: ["skill"],
                     },
                     handler: async (ctx) => {
                         const args = ctx.input || {};
+                        if (args.correlationId) {
+                            try {
+                                const b = bindings.require(args, sessionRef?.sessionId || "");
+                                return await inTenant(b.context, () => launchSkill(args.skill, args.entity || ""));
+                            } catch (err) { return { ok: false, error: err.message }; }
+                        }
+                        if (registry.registered) {
+                            if (!args.profile || !args.workspaceId) return { ok: false, error: "Supply the original launch binding or explicit profile/workspace context" };
+                            try {
+                                const c = selectContext(registry, args.profile, args.workspaceId, args.caseId);
+                                if (args.tenantId && c.tenantId !== args.tenantId) throw new Error("Tenant does not match profile");
+                                return await inTenant(c, () => launchSkill(args.skill, args.entity || ""));
+                            } catch (err) { return { ok: false, error: err.message }; }
+                        }
                         return await launchSkill(args.skill, args.entity || "");
+                    },
+                },
+                {
+                    name: "record_hunt_status",
+                    description: "Update a cross-tenant hunt target's status using the exact original launch correlation fields, never the active picker. Failures are errors/unavailable, not clean.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            correlationId: { type: "string" }, profile: { type: "string" }, tenantId: { type: "string" },
+                            workspaceId: { type: "string" }, caseId: { type: "string" },
+                            status: { type: "string", enum: ["running", "error", "unavailable"] },
+                            detail: { type: "string" },
+                        },
+                        required: ["correlationId", "profile", "tenantId", "workspaceId", "caseId", "status"],
+                    },
+                    handler: async (ctx) => {
+                        try {
+                            const b = bindings.require(ctx.input, sessionRef?.sessionId || "");
+                            return { ok: true, hunt: await updateHuntStatus(REPO_ROOT, b, ctx.input.status, ctx.input.detail) };
+                        } catch (err) { return { ok: false, error: err.message }; }
                     },
                 },
                 {
@@ -908,6 +1141,12 @@ sessionRef = await joinSession({
                     inputSchema: {
                         type: "object",
                         properties: {
+                            correlationId: { type: "string", description: "Exact original launch correlation ID; never infer from the currently selected tenant." },
+                            profile: { type: "string" },
+                            tenantId: { type: "string" },
+                            workspaceId: { type: "string" },
+                            caseId: { type: "string" },
+                            status: { type: "string", enum: ["complete", "error", "unavailable"], description: "Use error/unavailable for query, auth or capability failures; never clean." },
                             skill: { type: "string", description: "Skill that produced this finding, e.g. exposure-investigation. Optional — auto-filled from the active Mission Control run." },
                             title: { type: "string", description: "Short headline for the finding" },
                             severity: {
@@ -979,31 +1218,56 @@ sessionRef = await joinSession({
                                 },
                             },
                         },
-                        required: ["title", "severity"],
+                        required: ["title", "severity", ...(registry.registered ? ["correlationId", "profile", "tenantId", "workspaceId", "caseId"] : [])],
                     },
                     handler: async (ctx) => {
                         const args = ctx.input || {};
+                        let binding = null;
+                        try {
+                            if (registry.registered || hasCanvasLaunch || args.correlationId || activeRun()?.binding) {
+                                binding = bindings.require(args, sessionRef?.sessionId || "");
+                            }
+                        } catch (err) { return { ok: false, error: err.message }; }
+                        return inTenant(binding?.context ?? null, async () => {
                         // Auto-fill the mechanical fields from the active run so the
                         // launch directive doesn't have to ask for them. `skill` comes
                         // from whatever Mission Control (or the Skill tool) opened;
                         // `reports` from markdown files observed being written during
                         // the run. Anything the agent supplied explicitly wins.
-                        const run = activeRun();
-                        if (!args.skill) args.skill = run?.skill || "ad-hoc";
+                        const open = activeRun();
+                        const run = binding ? (open?.binding?.correlationId === binding.correlationId ? open : null) : open;
+                        if (!args.skill) args.skill = binding?.skill || run?.skill || "ad-hoc";
+                        if (binding) args.context = bindingFields(binding);
+                        if (args.status === "error" || args.status === "unavailable") {
+                            if (args.severity === "clean") args.severity = "info";
+                            args.recommended = [];
+                        }
+                        if (binding?.context && !binding.context.legacy && Array.isArray(args.reports)) {
+                            const prefix = `reports/tenants/${binding.context.key}/${binding.context.caseId}/`;
+                            if (args.reports.some((r) => {
+                                const p = typeof r === "string" ? r : r?.path || "";
+                                return !p.startsWith(prefix) || p.includes("\\") || p.split("/").includes("..");
+                            })) return { ok: false, error: "Report does not belong to captured tenant/case" };
+                        }
                         if (!Array.isArray(args.reports) || args.reports.length === 0) {
-                            if (runReportPaths.length) args.reports = runReportPaths.map((p) => ({ path: p }));
+                            if (run && runReportPaths.length) {
+                                const c = binding?.context;
+                                const prefix = c && !c.legacy ? `reports/tenants/${c.key}/${c.caseId}/` : "";
+                                args.reports = runReportPaths.filter(p => !prefix || (p.startsWith(prefix) && !p.split("/").includes("..")))
+                                    .map((p) => ({ path: p }));
+                            }
                         }
                         // Attribute AI usage since the previous finding to this one.
-                        const deltaNaiu = Math.max(0, cumulativeNaiu - lastFindingNaiu);
-                        lastFindingNaiu = cumulativeNaiu;
+                        const deltaNaiu = run ? Math.max(0, cumulativeNaiu - Math.max(lastFindingNaiu, runBaselineNaiu)) : 0;
+                        if (run) lastFindingNaiu = cumulativeNaiu;
                         args.creditsNaiu = deltaNaiu;
                         // Dominant model since the previous finding (most credits consumed).
                         let bestModel = "", bestDelta = 0;
-                        for (const [m, cum] of cumulativeByModel) {
-                            const d = cum - (lastByModel.get(m) || 0);
+                        for (const [m, cum] of run ? cumulativeByModel : []) {
+                            const d = cum - Math.max(lastByModel.get(m) || 0, runBaselineByModel.get(m) || 0);
                             if (d > bestDelta) { bestDelta = d; bestModel = m; }
                         }
-                        for (const [m, cum] of cumulativeByModel) lastByModel.set(m, cum);
+                        if (run) for (const [m, cum] of cumulativeByModel) lastByModel.set(m, cum);
                         if (bestModel) args.model = bestModel;
                         // Lineage. The run knows whether autopilot launched it and
                         // from which parent finding, so the chain records itself with
@@ -1016,20 +1280,22 @@ sessionRef = await joinSession({
                             };
                         }
                         try {
-                            const finding = await addFinding(REPO_ROOT, args, await knownSkillNames());
-                            try { await addCosting(REPO_ROOT, { ...finding, model: args.model }); } catch {}
+                            const finding = await addFinding(store(), args, await knownSkillNames());
+                            if (binding) await updateHuntStatus(REPO_ROOT, binding, finding.status, finding.summary, finding.id);
+                            try { await addCosting(store(), { ...finding, model: args.model }); } catch {}
                             // Link the finding to the run so the live strip can show it
                             // resolved and the recent-runs line doesn't flag it unrecorded.
-                            try { markRecorded(finding.id); } catch {}
+                            if (run) { try { markRecorded(finding.id); } catch {} }
                             await sessionRef?.log(`📌 Finding recorded: ${finding.title} (${finding.severity})`, { ephemeral: true });
                             // The decision point. Fires while this run is still open, so
                             // any follow-up lands in the queue and is dispatched on close
                             // — exactly what a click would have done.
-                            try { await autopilotOnFinding(finding, run); } catch {}
+                            if (run && finding.status === "complete") { try { await autopilotOnFinding(finding, run); } catch {} }
                             return { ok: true, id: finding.id, recommended: finding.recommended };
                         } catch (err) {
                             return { ok: false, error: err.message };
                         }
+                        });
                     },
                 },
             ],
@@ -1103,7 +1369,8 @@ try {
 // future SDK can degrade one signal without breaking extension load.
 // ---------------------------------------------------------------------------
 
-initActivity(REPO_ROOT, sessionRef?.sessionId || process.env.SESSION_ID || "");
+// No registry selection: do not infer a customer from an observed skill event.
+if (!registry.registered) initActivity(store(), sessionRef?.sessionId || process.env.SESSION_ID || "");
 
 // Autopilot's dependencies, injected rather than imported, so the state machine
 // stays testable and can't reach into the session on its own.
@@ -1112,14 +1379,14 @@ initAutopilot({
     // Deliberately the same entry point a click uses — autopilot gets no
     // privileged execution path, just the queue everything else goes through.
     launch: (lead) => launchSkill(lead.skill, lead.entity, lead.prompt, "", { autopilot: lead.autopilot, output: lead.output || "" }),
-    limits: async () => autopilotLimits(await loadPrefs(REPO_ROOT)),
+    limits: async () => autopilotLimits(await loadPrefs(store())),
     credits: () => autopilotSpentNaiu(),
     knownSkills: () => knownSkillNames(),
-    getFinding: (id) => getFinding(REPO_ROOT, id),
-    listFindings: () => loadFindings(REPO_ROOT),
+    getFinding: (id) => getFinding(store(), id),
+    listFindings: () => loadFindings(store()),
     // Every run that actually executed, recorded or not — the only source that
     // knows about runs which finished without producing a finding.
-    recentRuns: async () => (await readActivity(REPO_ROOT, activitySessionId())).recent || [],
+    recentRuns: async () => (await readActivity(store(), activitySessionId())).recent || [],
     flush: () => { try { flushActivity(); syncHeartbeat(); } catch { } },
 });
 
@@ -1135,6 +1402,7 @@ function on(eventName, fn) {
 // click (hand-typed "run threat pulse"). Only project skills count — this keeps
 // ordinary coding/chat turns out of the strip entirely.
 on("skill.invoked", (event) => {
+    if (registry.registered) return; // only an explicitly bound canvas launch is attributable
     const d = event?.data || {};
     const p = String(d.path || "").replace(/\\/g, "/");
     if (!p.includes(".github/skills/")) return;
@@ -1148,6 +1416,7 @@ on("skill.invoked", (event) => {
     }
     cancelEnd(); // a stale close scheduled by the previous run must not hit this one
     runBaselineNaiu = cumulativeNaiu;
+    runBaselineByModel = new Map(cumulativeByModel);
     // A run the agent started itself (skill tool) is the analyst's, not autopilot's.
     activeRunIsAutopilot = false;
     runReportPaths = [];
@@ -1212,7 +1481,9 @@ on("tool.execution_start", (event) => {
 on("subagent.started", () => { cancelEnd(); bumpSubagent(1); });
 on("subagent.completed", () => bumpSubagent(-1));
 
-on("session.title_changed", (event) => setSessionTitle(event?.data?.title || ""));
+on("session.title_changed", (event) => {
+    if (!registry.registered) setSessionTitle(event?.data?.title || "");
+});
 
 // Signal-only event — the todo table changed. Reading it is an extra call, so
 // debounce and treat any failure as "no progress info available".
@@ -1276,6 +1547,9 @@ function scheduleEnd(ms, opts) {
         if (age < MIN_RUN_MS) { scheduleEnd(MIN_RUN_MS - age, opts); return; }
         settleAutopilotCredits();
         endRun(opts || {});
+        if (run.hunt && run.binding && !run.findingId) {
+            void updateHuntStatus(REPO_ROOT, run.binding, opts?.error ? "error" : "unavailable", opts?.error || "Run ended without a recorded result");
+        }
         // Watchdog: an autopilot run that closed without recording a finding has
         // broken the chain. Without this the loop stalls while looking healthy.
         void autopilotOnRunClosed(run);
@@ -1292,6 +1566,8 @@ on("session.idle", () => scheduleEnd(IDLE_QUIET_MS, {}));
 on("session.error", (event) => {
     cancelEnd();
     settleAutopilotCredits();
+    const run = activeRun();
+    if (run?.hunt && run.binding) void updateHuntStatus(REPO_ROOT, run.binding, "error", event?.data?.message || "Session error");
     endRun({ error: event?.data?.message || "Session error" });
     void promoteQueued();
 });

@@ -1,4 +1,5 @@
 {
+  "__tenant_profiles_comment": "Optional: add a tenants object using docs/tenant-contexts.md. Omitted or empty tenants preserves legacy behavior; a nonempty registry is authoritative with no root fallback. Connections contain names only, never credentials.",
   "sentinel_workspace_id": "YOUR_WORKSPACE_ID_HERE",
   "tenant_id": "YOUR_TENANT_ID_HERE",
   "subscription_id": "YOUR_SUBSCRIPTION_ID_HERE",

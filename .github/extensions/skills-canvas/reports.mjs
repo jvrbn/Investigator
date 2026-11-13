@@ -9,8 +9,9 @@
 // subfolder or a vanished file yields a smaller list, never an exception —
 // the tab should degrade to "no reports" rather than break the canvas.
 
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, realpath, readFile } from "node:fs/promises";
 import path from "node:path";
+import { safeSlug } from "./tenant-context.mjs";
 
 // Extensions the preview iframe can actually display. serveReport() gives
 // markdown the rendered page, and hands SVG/HTML to the browser with a real
@@ -34,6 +35,26 @@ const MAX_DEPTH = 8; // deep enough for reports/<skill>/<sub>/…, shallow enoug
 // so a report written seconds ago still shows up on demand.
 const CACHE_TTL_MS = 5000;
 let cache = null;
+let cacheKey = "";
+
+// Slugs can be reassigned to another customer. A directory name alone is not
+// enough: a scoped preview must match the canonical case's recorded tenant.
+export async function reportMatchesTenant(repoRoot, rel, tenantKey, tenantId) {
+    try {
+        safeSlug(tenantKey);
+        const parts = rel.split("/");
+        if (parts.length < 5 || parts[0] !== "reports" || parts[1] !== "tenants" || parts[2] !== tenantKey ||
+            parts.some(p => !p || p === "." || p === ".." || p.includes("\\"))) return false;
+        safeSlug(parts[3]);
+        const caseDir = path.join(repoRoot, ...parts.slice(0, 4));
+        if (await realpath(caseDir) !== caseDir) return false;
+        const manifest = path.join(caseDir, "context.json");
+        if (await realpath(manifest) !== manifest) return false;
+        const c = JSON.parse(await readFile(manifest, "utf8"));
+        return c.schema_version === 1 && c.profile === tenantKey && c.tenant_id === tenantId &&
+            c.case_id === parts[3] && c.report_dir === parts.slice(0, 4).join("/");
+    } catch { return false; }
+}
 
 /**
  * Recursively collect viewable report files under `dir`.
@@ -100,12 +121,23 @@ async function walk(dir, rel, depth, out) {
  *
  * Never throws; a missing reports/ directory returns an empty payload.
  */
-export async function listReports(repoRoot, { refresh = false } = {}) {
-    if (!refresh && cache && Date.now() - cache.scannedAt < CACHE_TTL_MS) return cache;
+export async function listReports(repoRoot, { refresh = false, tenantKey = "", tenantId = "" } = {}) {
+    if (tenantKey) safeSlug(tenantKey);
+    const key = repoRoot + "|" + tenantKey + "|" + tenantId;
+    if (!refresh && cacheKey === key && cache && Date.now() - cache.scannedAt < CACHE_TTL_MS) return cache;
 
-    const root = path.join(repoRoot, ROOT_DIR);
+    const prefix = tenantKey ? "tenants/" + tenantKey : "";
+    const root = path.join(repoRoot, ROOT_DIR, prefix);
     const files = [];
-    await walk(root, "", 0, files);
+    const canonical = await realpath(root).catch(() => "");
+    const repo = await realpath(repoRoot);
+    if (canonical && canonical.startsWith(repo + path.sep) && (!tenantKey || canonical === path.join(repo, ROOT_DIR, prefix))) {
+        await walk(root, prefix, 0, files);
+    }
+    if (tenantKey) {
+        const matches = await Promise.all(files.map(f => reportMatchesTenant(repoRoot, f.path, tenantKey, tenantId)));
+        for (let i = files.length - 1; i >= 0; i--) if (!matches[i]) files.splice(i, 1);
+    }
     files.sort((a, b) => b.mtime - a.mtime);
 
     // Expand each file's directory into its full ancestor chain, so a folder
@@ -117,6 +149,7 @@ export async function listReports(repoRoot, { refresh = false } = {}) {
         for (let i = 1; i <= parts.length; i++) dirSet.add(parts.slice(0, i).join("/"));
     }
 
+    cacheKey = key;
     cache = {
         files,
         dirs: [...dirSet].sort(),

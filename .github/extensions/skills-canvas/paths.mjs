@@ -12,6 +12,14 @@ export const STATE_DIRNAME = ".mission-control";
 
 /** Root of all Mission Control runtime state: `<repo>/.mission-control`. */
 export function stateRoot(repoRoot) {
+    if (repoRoot && typeof repoRoot === "object") {
+        const { repoRoot: root, tenantKey, tenantFingerprint } = repoRoot;
+        if (typeof root !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(tenantKey) ||
+            ["__proto__", "constructor", "prototype"].includes(tenantKey) || !/^[0-9a-f]{16}$/.test(tenantFingerprint)) {
+            throw new Error("Invalid tenant state scope");
+        }
+        return path.join(root, STATE_DIRNAME, "tenants", tenantKey, tenantFingerprint);
+    }
     return path.join(repoRoot, STATE_DIRNAME);
 }
 

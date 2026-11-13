@@ -4,7 +4,7 @@
 # Slim version: title, path, domains, mitre, prompt only.
 # Use --full flag to generate the verbose manifest with tables, keywords, platform, timeframe.
 
-generated: '2026-11-11T17:34:15Z'
+generated: '2026-11-13T18:53:08Z'
 valid_domains:
 - admin
 - cloud
@@ -38,6 +38,15 @@ skills:
   domains:
   - identity
   prompt: Trace authentication chain for {entity} — SessionId analysis, token reuse, geographic anomalies
+- name: bec-investigation
+  path: .github/skills/bec-investigation/SKILL.md
+  domains:
+  - email
+  - identity
+  - incidents
+  - cloud
+  prompt: 'Investigate business email compromise for {entity}: delivery, clicks, authentication, forwarding, mailbox access,
+    outbound mail, and current exposure'
 - name: ca-policy-investigation
   path: .github/skills/ca-policy-investigation/SKILL.md
   domains:
@@ -50,6 +59,15 @@ skills:
   prompt: Investigate device {entity} — Defender alerts, process activity, vulnerabilities, compliance
 - name: context-memory-review
   path: .github/skills/context-memory-review/SKILL.md
+- name: cross-tenant-hunt
+  path: .github/skills/cross-tenant-hunt/SKILL.md
+  domains:
+  - incidents
+  - identity
+  - endpoint
+  - cloud
+  - email
+  prompt: Run a read-only cross-tenant hunt for {entity} across explicitly selected profiles and workspaces
 - name: data-security-analysis
   path: .github/skills/data-security-analysis/SKILL.md
   domains:
@@ -98,6 +116,13 @@ skills:
   prompt: Investigate IoC {entity} — threat intel, organizational exposure, affected devices
 - name: kql-query-authoring
   path: .github/skills/kql-query-authoring/SKILL.md
+- name: local-agent-investigation
+  path: .github/skills/local-agent-investigation/SKILL.md
+  domains:
+  - endpoint
+  - cloud
+  prompt: Investigate this local AI agent on the scoped device using authorized local evidence and Defender local-agent discovery;
+    distinguish configured MCP tools from observed invocations and source-reported outcomes.
 - name: mcp-usage-monitoring
   path: .github/skills/mcp-usage-monitoring/SKILL.md
   domains:
@@ -108,6 +133,15 @@ skills:
   domains:
   - incidents
   prompt: Run MITRE ATT&CK coverage report — tactic/technique coverage, gaps, SOC optimization
+- name: ransomware-investigation
+  path: .github/skills/ransomware-investigation/SKILL.md
+  domains:
+  - endpoint
+  - incidents
+  - identity
+  - exposure
+  prompt: 'Investigate ransomware and lateral movement for {entity}: process ancestry, file impact, remote access, security-control
+    outcomes, and affected assets'
 - name: scope-drift-detection-device
   path: .github/skills/scope-drift-detection/device/SKILL.md
   domains:
@@ -132,6 +166,15 @@ skills:
     optimization
 - name: svg-dashboard
   path: .github/skills/svg-dashboard/SKILL.md
+- name: telemetry-health
+  path: .github/skills/telemetry-health/SKILL.md
+  domains:
+  - admin
+  - cloud
+  - endpoint
+  - incidents
+  prompt: 'Assess telemetry and detection health for {entity}: failed analytic rules, ingestion regressions, required-table
+    freshness, and Defender sensor coverage'
 - name: threat-intel-campaign
   path: .github/skills/threat-intel-campaign/SKILL.md
 - name: threat-pulse
