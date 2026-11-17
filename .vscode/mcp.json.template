@@ -10,6 +10,15 @@
   //   - Sentinel Data Lake, Graph, Triage: Browser-based Azure AD login
   //   - KQL Search: GitHub PAT with public_repo scope
   //   - Microsoft Learn: No authentication required
+  //
+  // Multi-tenant (B2B guest / Defender multitenant organization):
+  //   One server entry is one tenant connection. Keep the entries below for your home
+  //   tenant and add a separately named entry per extra tenant, with the header
+  //   "x-mcp-client-tenant-id": "<that-tenant-id>". `python scripts/tenant_context.py
+  //   render-mcp --profile <profile>` prints ready-made entries for a configured tenant
+  //   profile (it only prints; merge them in yourself). The header selects the tenant and
+  //   grants no roles. Sentinel Triage has documented guest/delegated-access limits.
+  //   Details: docs/b2b-mto-multi-tenant.md
   // ============================================================
 
   "inputs": [

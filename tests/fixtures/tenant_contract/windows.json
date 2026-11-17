@@ -1,0 +1,32 @@
+{
+  "_comment": "Shared by tests/test_tenant_context.py and .github/extensions/skills-canvas/tenant-context.test.mjs. Synthetic values only.",
+  "valid": [
+    {"end": "2024-03-01T12:00:00Z", "lookback_days": 7, "start": "2024-02-23T12:00:00Z"},
+    {"end": "2024-03-01T00:00:00Z", "lookback_days": 1, "start": "2024-02-29T00:00:00Z"},
+    {"end": "2024-12-31T23:59:59Z", "lookback_days": 365, "start": "2024-01-01T23:59:59Z"},
+    {"end": "2024-03-01T12:00:00Z", "lookback_days": 3650, "start": "2014-03-04T12:00:00Z"},
+    {"end": "2023-01-01T00:00:00Z", "lookback_days": 1, "start": "2022-12-31T00:00:00Z"}
+  ],
+  "invalid_ends": [
+    "2024-03-01",
+    "2024-03-01T12:00:00",
+    "2024-03-01T12:00:00.000Z",
+    "2024-02-30T12:00:00Z",
+    "2024-03-01T12:00:00+00:00",
+    " 2024-03-01T12:00:00Z",
+    "2024-13-01T12:00:00Z",
+    "2024-03-01T24:00:00Z",
+    "",
+    20240301
+  ],
+  "invalid_lookbacks": [0, -1, 3651, 7.5, "7", null, true],
+  "valid_hunt_ids": ["a", "hunt-1", "h_1", "0abc", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+  "invalid_hunt_ids": ["", "Hunt", "-hunt", "_hunt", "hunt id", "hunt/x", "hunt.1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+  "children": [
+    {"hunt_id": "hunt-1", "index": 1, "case_id": "hunt-1-01"},
+    {"hunt_id": "hunt-1", "index": 10, "case_id": "hunt-1-10"},
+    {"hunt_id": "hunt-1", "index": 99, "case_id": "hunt-1-99"}
+  ],
+  "invalid_child_indexes": [0, 100, -1, 1.5, "1", null],
+  "invalid_child_case_ids": ["hunt-1-00", "hunt-1-100", "hunt-1-1", "hunt-1", "other-01", "hunt-1-01-01"]
+}

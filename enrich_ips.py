@@ -5,10 +5,17 @@ Usage:
     python enrich_ips.py <ip1> <ip2> <ip3> ...
     python enrich_ips.py --file investigation.json
     python enrich_ips.py 203.0.113.42 198.51.100.10
+    python enrich_ips.py --file investigation.json --context reports/tenants/<profile>/<case>/context.json
 
 Enriches IP addresses using ipinfo.io, vpnapi.io, AbuseIPDB, and Shodan.
+
+When a tenant registry is configured in config.json, --context is required and the results
+are written only inside that tenant case directory (never to the shared temp/ directory).
 """
 
+import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -17,6 +24,9 @@ from requests.adapters import HTTPAdapter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from pathlib import Path
+from scripts.tenant_context import ContextError, check_evidence_tenant, require_case_context, write_case_file
+
+REPO_ROOT = Path(__file__).resolve().parent
 
 # Force UTF-8 stdout on Windows to prevent UnicodeEncodeError with box-drawing/emoji chars
 if sys.platform == 'win32':
@@ -475,10 +485,13 @@ def print_summary(results: list[dict]):
     print(f"    Clean residential IPs: {sum(1 for x in results if not any([x['is_vpn'], x['vpnapi_security_vpn'], x['is_proxy'], x['vpnapi_security_proxy'], x['is_tor'], x['vpnapi_security_tor'], x['abuse_confidence_score'] > 0]))}")
 
 
-def extract_ips_from_investigation(json_path: str) -> list[str]:
+def extract_ips_from_investigation(json_path: str, case=None) -> list[str]:
     """Extract unenriched IPs from an investigation JSON file or simple IP list JSON"""
     with open(json_path, 'r') as f:
         data = json.load(f)
+
+    if case is not None:
+        check_evidence_tenant(data, case)
     
     # Check if this is a simple IP list file (honeypot format)
     if 'ips' in data and isinstance(data['ips'], list):
@@ -504,54 +517,102 @@ def extract_ips_from_investigation(json_path: str) -> list[str]:
     return sorted(all_ips - enriched_ips)
 
 
-def main():
-    """CLI entry point"""
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python enrich_ips.py <ip1> <ip2> <ip3> ...")
-        print("  python enrich_ips.py --file <json_file>")
-        print("\nJSON File Formats:")
-        print("  1. Simple IP list: {\"ips\": [\"1.2.3.4\", \"5.6.7.8\"]}")
-        print("  2. Full investigation JSON (auto-extracts unenriched IPs)")
-        print("\nExamples:")
-        print("  python enrich_ips.py 203.0.113.42 198.51.100.10")
-        print("  python enrich_ips.py --file temp/honeypot_ips_20251213.json")
-        print("  python enrich_ips.py --file temp/investigation_user_20251130.json")
-        sys.exit(1)
-    
-    # Parse arguments
-    if sys.argv[1] == '--file':
-        if len(sys.argv) < 3:
-            print("Error: --file requires a path to investigation JSON")
-            sys.exit(1)
-        ip_list = extract_ips_from_investigation(sys.argv[2])
-        if not ip_list:
-            print("No unenriched IPs found in investigation file")
-            sys.exit(0)
-    else:
-        ip_list = sys.argv[1:]
-    
-    # Enrich IPs
-    results = enrich_ips(ip_list)
-    
-    # Save JSON results
-    from datetime import datetime
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = Path('temp') / f'ip_enrichment_{timestamp}.json'
-    output_file.parent.mkdir(exist_ok=True)
-    with open(output_file, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    # Write verbose report to a text file (keeps terminal output small for VS Code)
-    report_file = Path('temp') / f'ip_enrichment_{timestamp}.txt'
-    with open(report_file, 'w', encoding='utf-8') as rf:
-        _original_stdout = sys.stdout
-        sys.stdout = rf
+USAGE = """Usage:
+  python enrich_ips.py <ip1> <ip2> <ip3> ...
+  python enrich_ips.py --file <json_file>
+  python enrich_ips.py --file <json_file> --context reports/tenants/<profile>/<case>/context.json
+
+JSON File Formats:
+  1. Simple IP list: {"ips": ["1.2.3.4", "5.6.7.8"]}
+  2. Full investigation JSON (auto-extracts unenriched IPs)
+
+Examples:
+  python enrich_ips.py 203.0.113.42 198.51.100.10
+  python enrich_ips.py --file temp/honeypot_ips_20251213.json
+  python enrich_ips.py --file temp/investigation_user_20251130.json
+
+With a tenant registry configured, --context is required and results stay in that case directory."""
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Enrich IP addresses using ipinfo.io, vpnapi.io, AbuseIPDB and Shodan")
+    parser.add_argument('ips', nargs='*', metavar='IP', help='IP addresses to enrich')
+    parser.add_argument('--file', metavar='JSON', help='Simple IP list or investigation JSON to extract IPs from')
+    parser.add_argument('--context', type=Path,
+                        help='Tenant case context.json (required when a tenant registry is configured)')
+    parser.add_argument('--repo-root', type=Path, default=REPO_ROOT,
+                        help='Repository that owns the context (defaults to this script\'s repository)')
+    args = parser.parse_args(argv)
+    if args.file and args.ips:
+        parser.error('give IP addresses or --file, not both')
+    return args
+
+
+def render_report(results: list[dict]) -> str:
+    """Verbose text report, kept out of the terminal to avoid VS Code output-capture freezes."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
         print_detailed_results(results)
         print_abuse_comments(results)
         print_shodan_details(results)
         print_summary(results)
-        sys.stdout = _original_stdout
+    return buffer.getvalue()
+
+
+def save_results(results: list[dict], timestamp: str, case=None, repo_root=REPO_ROOT):
+    """Write the JSON results and text report; return their paths.
+
+    Without a case the legacy shared temp/ directory is used. With a case, both files are
+    exclusive-created inside that tenant's case directory instead.
+    """
+    payload = json.dumps(results, indent=2)
+    report = render_report(results)
+    if case is not None:
+        return (write_case_file(repo_root, case, f'ip_enrichment_{timestamp}.json', payload),
+                write_case_file(repo_root, case, f'ip_enrichment_{timestamp}.txt', report))
+    output_file = Path('temp') / f'ip_enrichment_{timestamp}.json'
+    output_file.parent.mkdir(exist_ok=True)
+    with open(output_file, 'w') as f:
+        f.write(payload)
+    report_file = Path('temp') / f'ip_enrichment_{timestamp}.txt'
+    with open(report_file, 'w', encoding='utf-8') as rf:
+        rf.write(report)
+    return output_file, report_file
+
+
+def main(argv=None):
+    """CLI entry point"""
+    args = parse_args(argv)
+    if not args.ips and not args.file:
+        print(USAGE)
+        sys.exit(1)
+
+    try:
+        # Registry mode never falls back to the shared temp/ directory.
+        case = require_case_context(args.context, repo_root=args.repo_root)
+        if args.file:
+            ip_list = extract_ips_from_investigation(args.file, case)
+            if not ip_list:
+                print("No unenriched IPs found in investigation file")
+                sys.exit(0)
+        else:
+            ip_list = args.ips
+    except ContextError as error:
+        print(f"Error: {error}")
+        sys.exit(2)
+    
+    # Enrich IPs
+    results = enrich_ips(ip_list)
+    
+    # Save JSON results and the verbose text report
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    try:
+        output_file, report_file = save_results(results, timestamp, case, args.repo_root)
+    except ContextError as error:
+        print(f"Error: {error}")
+        sys.exit(2)
     
     # Print only a compact summary to terminal (avoids VS Code output-capture freeze)
     print(f"\n{'='*80}")

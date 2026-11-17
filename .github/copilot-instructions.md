@@ -68,7 +68,10 @@ The [tenant-context workflow](../docs/tenant-contexts.md) applies before every
 investigation when tenant profiles are configured. Select the profile and
 workspace explicitly when multiple exist, and freeze the tenant, workspace,
 connection references, case/run ID, and time window for the run. Legacy root
-configuration remains supported when no profiles are configured.
+configuration remains supported when no profiles are configured. For accounts that
+reach other tenants as B2B guests and tenants linked by Defender multitenant
+organization (MTO) management, see
+[B2B guest and MTO setup](../docs/b2b-mto-multi-tenant.md).
 
 - A selected profile is authoritative: do not merge missing profile values,
   mappings, or memory with another tenant or the legacy root environment.
@@ -77,8 +80,16 @@ configuration remains supported when no profiles are configured.
 - Offline profile validation is not authentication. Run the authenticated
   read-only checks when available, and separately verify each actual MCP
   connection's scope. A CLI token or tenant header does not prove MCP identity.
+- Prove access per capability before querying: `python scripts/tenant_context.py verify <context>`
+  probes Azure CLI access only (it never signs in or switches tenant), `attest`
+  records a claim for an MCP route you checked, and `readiness` lists what is
+  `usable` or `blocked`. Query only through a `usable` route. Failed, denied,
+  expired and unverified states mean *unavailable*, never *clean*. Ledger records
+  are advisory evidence, not proof; see
+  [capability ledger and readiness](../docs/tenant-contexts.md#capability-ledger-and-readiness).
 - Triage MCP still requires supported home-tenant access and does not provide
-  Sentinel workspace selection. Mark unsupported capabilities unavailable.
+  Sentinel workspace selection. Mark unsupported capabilities unavailable. Triage is
+  unsupported through a B2B guest account.
 - Discover and select workspaces within each selected tenant's authenticated
   Data Lake connection. `default` refers to that connection's system-table
   scope, never to all tenants.
@@ -89,6 +100,21 @@ configuration remains supported when no profiles are configured.
 - Partition evidence, reports, caches, findings, and memory by tenant and run.
   IDs are tenant-qualified; equal display names or incident numbers do not
   identify the same entity across tenants.
+- Custom SIT/label GUID names and `sit_priority` are tenant-local: read them with
+  `python scripts/tenant_context.py mappings <context>`, never from root-level keys
+  or another profile.
+- In a cross-tenant hunt every case pins one UTC window (`window.start_utc`,
+  `window.end_utc`). Filter with `between (datetime(<start>) .. datetime(<end>))`,
+  never `ago()`, so all tenants cover the same interval.
+- Once a registry exists, the shared legacy outputs (`temp/`,
+  `reports/user-investigations/`) are not a destination for tenant evidence:
+  `enrich_ips.py` and `scripts/generate_report_from_json.py` require
+  `--context <path to context.json>` and write into the case directory,
+  `scripts/kql_to_ah_url.py` requires an explicit `--tid`, and `InvestigationConfig`
+  needs an explicit profile.
+- A single MCP connection is authenticated to one tenant. Use one connection per
+  tenant; `python scripts/tenant_context.py render-mcp --profile <profile>` prints the
+  server entries to merge by hand (it configures nothing).
 - Record Mission Control results against the captured launch context, not the
   currently selected tenant. Never silently reroute failed collection or writes.
 - Cross-tenant hunts require explicit selected scopes and the
@@ -441,7 +467,7 @@ Never generate executable commands that change tenant, mailbox, user, device, or
 | 🔍 Core | **bec-investigation** | Email-to-account compromise chain: delivery/clicks, authentication, mailbox rules/access, outbound mail, and current exposure | "BEC", "business email compromise", "mailbox takeover", "payment fraud" |
 | 🔍 Core | **ransomware-investigation** | Attributed endpoint execution, file impact, lateral movement, control outcomes, and affected-device scope | "ransomware investigation", "encryption incident", "destructive activity" |
 | 🤖 GenAI | **local-agent-investigation** | Local agent discovery, observed tools/MCP usage, authorized prompt/response imports, and evidence timeline | "local agent actions", "local agent investigation", "agent prompts and responses" |
-| 🔍 Hunt | **cross-tenant-hunt** | Explicitly scoped read-only hunts with per-tenant authentication, evidence isolation, and partial-result accounting | "cross-tenant hunt", "hunt across tenants", "multi-tenant investigation" |
+| 🔍 Hunt | **cross-tenant-hunt** | Explicitly scoped read-only hunts with per-tenant authentication, evidence isolation, a shared pinned window, capability readiness, and partial-result accounting (B2B guest tenants and Defender multitenant organization targets) | "cross-tenant hunt", "hunt across tenants", "multi-tenant investigation", "multitenant organization", "MTO", "B2B guest tenants", "partner tenants" |
 | 🔧 Tooling | **telemetry-health** | Investigation readiness: rule failures, ingestion regressions, required-source freshness, and sensor coverage | "telemetry health", "detection health", "missing telemetry", "investigation readiness" |
 | 🔐 Auth | **authentication-tracing** | Authentication chain forensics (SessionId, token reuse, geographic anomalies) | "trace authentication", "SessionId analysis", "token reuse", "geographic anomaly", "impossible travel" |
 | 🔐 Auth | **ca-policy-investigation** | Conditional Access policy forensics and bypass detection | "Conditional Access", "CA policy", "device compliance", "policy bypass", "53000", "50074", "530032" |
@@ -544,7 +570,7 @@ Every SecurityIncident query MUST include `ProviderIncidentId` in the output and
 
 ### 🔗 Tenant ID in Portal URLs — GLOBAL RULE
 
-**ALL `security.microsoft.com` URLs** generated in output MUST include the `tid` query parameter for reliable cross-tenant deep linking. Read `tenant_id` from `config.json`.
+**ALL `security.microsoft.com` URLs** generated in output MUST include the `tid` query parameter for reliable cross-tenant deep linking. Read `tenant_id` from `config.json` (registry mode: the selected case's tenant — a link built from another tenant's ID opens the wrong tenant's portal).
 
 | URL has existing query params? | Append |
 |-------------------------------|--------|
@@ -832,7 +858,9 @@ python enrich_ips.py 203.0.113.42 198.51.100.10 192.0.2.1
 python enrich_ips.py --file temp/investigation_user_20251130.json
 ```
 
-**Output:** Detailed per-IP results (city, country, ISP/ASN, VPN/proxy/Tor flags, AbuseIPDB score + recent report comments) and a JSON export saved to `temp/`.
+**Registry mode:** once `config.json` has a `tenants` registry, the tool refuses to run without `--context reports/tenants/<profile>/<case>/context.json` and writes into that case directory instead of `temp/`. `--file` evidence stamped with a different `tenant_id` is refused before any lookup, and IP arguments cannot be combined with `--file`.
+
+**Output:** Detailed per-IP results (city, country, ISP/ASN, VPN/proxy/Tor flags, AbuseIPDB score + recent report comments) and a JSON export saved to `temp/` (registry mode: the case directory).
 
 **⚠️ Output Consumption:** NEVER `read_file` the `.txt` report during long conversations — it triggers VS Code chat freezes from cumulative response size. Parse the `.json` via PowerShell (`ConvertFrom-Json | Format-Table`) instead.
 
@@ -844,7 +872,7 @@ Every AH query in a `🎬 Take Action` block MUST include **both**:
 1. The KQL in a **copyable fenced code block** (` ```kql ... ``` `) — the analyst copies this to paste into the AH portal
 2. A **plain portal link** immediately after the code block: `[Run in Advanced Hunting](https://security.microsoft.com/v2/advanced-hunting?tid=<tenant_id>)` — opens the AH page scoped to the correct tenant; the analyst pastes the KQL there
 
-**Tenant ID:** Read `tenant_id` from `config.json` and append `?tid=<tenant_id>` to the URL. Omit `tid` entirely if `tenant_id` is missing or a placeholder.
+**Tenant ID:** Read `tenant_id` from `config.json` (registry mode: the selected case's tenant) and append `?tid=<tenant_id>` to the URL. Omit `tid` entirely if `tenant_id` is missing or a placeholder.
 
 **🔴 DO NOT encode KQL into the URL.** The `scripts/kql_to_ah_url.py` script still exists but is **deprecated for use in output** — encoded URLs are fragile (encoding bugs, VS Code chat rendering quirks, link-length limits). Always provide the plain portal URL + copyable code block instead.
 

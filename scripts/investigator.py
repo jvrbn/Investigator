@@ -8,11 +8,16 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Callable
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from collections import defaultdict
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    from .tenant_context import load_profiles, select_profile, tenant_registry_configured
+except ImportError:
+    from tenant_context import load_profiles, select_profile, tenant_registry_configured
 
 
 @dataclass
@@ -25,16 +30,35 @@ class InvestigationConfig:
     output_dir: str = "reports"
     
     @classmethod
-    def from_file(cls, path: str = "config.json"):
-        """Load configuration from JSON file"""
-        if os.path.exists(path):
-            with open(path, 'r') as f:
-                config = json.load(f)
-                return cls(**config)
-        return cls(
-            sentinel_workspace_id="",
-            tenant_id=""
-        )
+    def from_file(cls, path: str = "config.json", profile: Optional[str] = None):
+        """Load configuration from JSON file.
+
+        Keys this class does not model (tenants, azure_mcp, mappings, ...) are ignored. When a
+        tenant registry is configured it is authoritative: the root-level tenant_id and
+        sentinel_workspace_id are never used, so they stay empty unless `profile` selects a
+        registered tenant (its workspace is used only if it has exactly one). API tokens are
+        not tenant-scoped and are always read from the file.
+        """
+        if not os.path.exists(path):
+            return cls(
+                sentinel_workspace_id="",
+                tenant_id=""
+            )
+        with open(path, 'r') as f:
+            config = json.load(f)
+        known = {item.name for item in fields(cls)}
+        values = {key: value for key, value in config.items() if key in known}
+        if profile is not None:
+            selected = select_profile(load_profiles(path), profile)
+            values["tenant_id"] = selected.tenant_id
+            values["sentinel_workspace_id"] = (
+                selected.workspaces[0].id if len(selected.workspaces) == 1 else "")
+        elif tenant_registry_configured(path):
+            values["tenant_id"] = ""
+            values["sentinel_workspace_id"] = ""
+        values.setdefault("sentinel_workspace_id", "")
+        values.setdefault("tenant_id", "")
+        return cls(**values)
 
 
 @dataclass

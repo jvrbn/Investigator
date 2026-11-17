@@ -91,7 +91,7 @@ class CompactReportGenerator:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
         # Generate HTML content
-        html = self._generate_html(result)
+        html = self.render(result)
         
         # Write to file
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -99,6 +99,10 @@ class CompactReportGenerator:
         
         return output_path
     
+    def render(self, result: InvestigationResult) -> str:
+        """Return the report HTML without touching the filesystem (for tenant-bound writers)."""
+        return self._generate_html(result)
+
     def _generate_html(self, result: InvestigationResult) -> str:
         """Generate complete HTML document"""
         

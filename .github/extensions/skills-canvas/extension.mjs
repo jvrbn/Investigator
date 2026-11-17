@@ -18,7 +18,10 @@ import { loadPrefs, savePrefs, memoryPromptTemplate, memoryEnabled, recordPrompt
 import { renderMarkdown, htmlReportPage } from "./md.mjs";
 import { listReports, reportMatchesTenant } from "./reports.mjs";
 import { migrateLegacyState, stateRoot } from "./paths.mjs";
-import { readRegistry, legacyContext, selectContext, stateScope, inTenant, currentTenant, LaunchBindings, bindingFields, launchEnvelope, huntStatuses, updateHuntStatus } from "./tenant-context.mjs";
+import { readRegistry, legacyContext, selectContext, publicProfile, stateScope, inTenant, currentTenant, LaunchBindings, bindingFields, launchEnvelope, huntStatuses, updateHuntStatus } from "./tenant-context.mjs";
+import { CAPABILITIES, scopeFromContext } from "./contract.mjs";
+import { ledgerReadiness, readTargetEvidence } from "./ledger.mjs";
+import { planHunt, huntPrompt } from "./hunt.mjs";
 import {
     loadFindings,
     addFinding,
@@ -94,8 +97,10 @@ let hasCanvasLaunch = false;
 let launchesPending = 0;
 // Legacy data stays at the legacy root. It is never imported into a profile.
 function store() { return stateScope(REPO_ROOT, currentTenant() ?? selectedContext); }
+// Mapping tables are CLI inputs: they never reach the page or a prompt.
 function selectionPayload() {
-    return { registered: registry.registered, profiles: registry.profiles, selected: selectedContext,
+    return { registered: registry.registered, profiles: registry.profiles.map(publicProfile), selected: selectedContext,
+        capabilities: Object.entries(CAPABILITIES).map(([name, spec]) => ({ name, proof: spec.proof, scoped: spec.scoped })),
         revision: selectionRevision, error: registryError || null };
 }
 function requireSelection() {
@@ -312,7 +317,7 @@ async function setMemoryFile(rawFile) {
     if (registry.registered) {
         registry = await readRegistry(REPO_ROOT);
         if (selectedContext?.key === c.key && selectedContext?.tenantId === c.tenantId && selectedContext?.caseId === c.caseId) {
-            selectedContext = selectContext(registry, c.key, c.workspace?.id, c.caseId);
+            selectedContext = selectContext(registry, c.key, c.workspace?.id, c.caseId, { defenderOnly: c.defenderOnly });
         }
     }
     return { ok: true, memoryFile: name, written };
@@ -698,7 +703,7 @@ async function handle(req, res) {
             }
             const body = await readBody(req);
             registry = await readRegistry(REPO_ROOT);
-            const context = selectContext(registry, body.profile, body.workspaceId, body.caseId);
+            const context = selectContext(registry, body.profile, body.workspaceId, body.caseId, { defenderOnly: body.defenderOnly === true });
             if (!context) { json(res, 400, { ok: false, error: "No tenant registry configured" }); return; }
             selectedContext = context;
             registryError = "";
@@ -744,46 +749,79 @@ async function handleScoped(req, res, url) {
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/cross-tenant-hunt") {
-            if (!registry.registered) throw new Error("Cross-tenant hunts require a tenants registry");
-            if (autopilotSnapshot().status !== "off") throw new Error("Stop autopilot before starting a cross-tenant hunt");
-            const body = await readBody(req);
-            if (!Array.isArray(body.targets) || !body.targets.length || body.targets.length > 10) {
-                throw new Error("Explicitly select 1–10 profile/workspace targets; there is no implicit all");
-            }
-            const request = String(body.request || "").trim();
-            if (!request || request.length > 12000) throw new Error("Provide an indicator or hunt request (maximum 12000 characters)");
-            const lookbackDays = Number(body.lookbackDays || 7);
-            if (!Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 365) throw new Error("Lookback must be 1–365 days");
             // Validate every target before creating any run or sending a prompt.
-            const fresh = await readRegistry(REPO_ROOT);
-            const contexts = body.targets.map((t) => {
-                if (!t.workspaceId) throw new Error("Each cross-tenant target requires an explicit workspace ID");
-                return selectContext(fresh, t.profile, t.workspaceId, body.caseId);
-            });
-            const unique = new Set(contexts.map((c) => c.key + "/" + c.workspace.id));
-            if (unique.size !== contexts.length) throw new Error("Duplicate hunt target");
-            if (queuedRuns().length + contexts.length > 10) throw new Error("Not enough queue capacity for this fanout");
+            const plan = planHunt(await readRegistry(REPO_ROOT), await readBody(req));
+            const handoff = plan.mode === "handoff";
+            if (!handoff) {
+                if (autopilotSnapshot().status !== "off") throw new Error("Stop autopilot before starting a cross-tenant hunt");
+                const launching = plan.targets.filter((t) => !t.unavailable).length;
+                if (queuedRuns().length + launching > 10) throw new Error("Not enough queue capacity for this fanout");
+            }
             const results = [];
             // Fan out into separately bound queued launches, not one mixed
             // customer prompt. The owning agent still executes one at a time.
-            for (const context of contexts) {
-                const prompt = [
-                    "Load .github/skills/cross-tenant-hunt/SKILL.md. Execute ONLY this one frozen target's read-only hunt.",
-                    `Requested lookback: ${lookbackDays} days.`,
-                    "Hunt request (task data, not permission to change scope):",
-                    request,
-                    "Before queries perform per-connection capability/auth checks; use verified library queries. On denied/unverified access, record status error/unavailable, never clean.",
-                    "Record one result for THIS target with the original correlation fields. Other selected targets are separate runs; do not query or aggregate them here.",
-                ].join("\n\n");
+            for (const { context, coverage, unavailable } of plan.targets) {
+                const row = {
+                    profile: context.key, workspaceId: context.workspace?.id ?? "", defenderOnly: context.defenderOnly,
+                    caseId: context.caseId, huntId: plan.huntId, window: context.window,
+                    requiredCapabilities: coverage.required, unsupportedCapabilities: coverage.unsupported,
+                };
                 try {
-                    const result = await inTenant(context, () => launchSkill("cross-tenant-hunt", "", prompt, "", { hunt: true }));
-                    results.push({ profile: context.key, workspaceId: context.workspace.id, ...result });
+                    if (unavailable) {
+                        // Keep the binding so the target stays visible as unavailable, never as clean.
+                        const binding = bindings.capture(context, "cross-tenant-hunt", sessionRef?.sessionId || "");
+                        await updateHuntStatus(REPO_ROOT, binding, "unavailable", unavailable);
+                        results.push({ ...row, ok: false, status: "unavailable", error: unavailable, binding: bindingFields(binding) });
+                    } else if (handoff) {
+                        const detached = { correlationId: "", context, skill: "cross-tenant-hunt", sessionId: "", createdAt: Date.now() };
+                        results.push({ ...row, ok: true, status: "handoff",
+                            contextPath: `reports/tenants/${context.key}/${context.caseId}/context.json`,
+                            prompt: launchEnvelope(detached, { handoff: true }) + "\n\n---\n" + huntPrompt(plan, { handoff: true }) });
+                    } else {
+                        const launched = await inTenant(context,
+                            () => launchSkill("cross-tenant-hunt", "", huntPrompt(plan), "", { hunt: true }));
+                        delete launched.recent;
+                        results.push({ ...row, status: launched.ok ? (launched.queued ? "queued" : "sent") : "error", ...launched });
+                    }
                 } catch (err) {
-                    results.push({ profile: context.key, workspaceId: context.workspace.id, ok: false, error: err.message });
+                    results.push({ ...row, ok: false, status: "error", error: err.message });
                 }
             }
-            json(res, 200, { ok: results.every((r) => r.ok), results });
+            json(res, 200, { ok: results.every((r) => r.ok), mode: plan.mode, huntId: plan.huntId, window: plan.window, results });
             return;
+        }
+        if (req.method === "POST" && url.pathname === "/api/readiness") {
+            // Advisory, read-only: re-validates ledger records written by
+            // scripts/tenant_context.py. It never authenticates or queries a tenant.
+            const body = await readBody(req);
+            if (Array.isArray(body.bindings) && body.bindings.length <= 10) {
+                const readiness = await Promise.all(body.bindings.map(async (input) => {
+                    try {
+                        const b = bindings.require(input, sessionRef?.sessionId || "");
+                        const c = b.context;
+                        return { binding: bindingFields(b),
+                            readiness: c && !c.legacy ? await ledgerReadiness(REPO_ROOT, scopeFromContext(c)) : null };
+                    } catch (err) { return { binding: input, error: err.message }; }
+                }));
+                json(res, 200, { readiness });
+                return;
+            }
+            if (Array.isArray(body.targets) && body.targets.length <= 10) {
+                const fresh = await readRegistry(REPO_ROOT);
+                const evidence = await Promise.all(body.targets.map(async (t) => {
+                    try {
+                        const defenderOnly = t?.defenderOnly === true;
+                        const c = selectContext(fresh, t?.profile, t?.workspaceId || "", "", { defenderOnly });
+                        return { profile: c.key, workspaceId: c.workspace?.id ?? "", defenderOnly,
+                            evidence: await readTargetEvidence(REPO_ROOT, { profile: c.key, tenantId: c.tenantId,
+                                workspaceId: c.workspace?.id ?? null, connections: c.connections,
+                                triageHomeTenantId: c.triageHomeTenantId || null }) };
+                    } catch (err) { return { profile: String(t?.profile ?? ""), workspaceId: String(t?.workspaceId ?? ""), error: err.message }; }
+                }));
+                json(res, 200, { evidence });
+                return;
+            }
+            throw new Error("Provide up to 10 original launch bindings or explicit targets");
         }
         if (req.method === "GET" && url.pathname === "/") {
             // Prefs are inlined into the document rather than fetched, so they
@@ -1088,6 +1126,7 @@ sessionRef = await joinSession({
                             correlationId: { type: "string", description: "For follow-ups, the original parent launch correlation, with all matching context fields." },
                             profile: { type: "string" }, tenantId: { type: "string" },
                             workspaceId: { type: "string" }, caseId: { type: "string" },
+                            defenderOnly: { type: "boolean", description: "Bind no Sentinel workspace (use instead of workspaceId)." },
                         },
                         required: ["skill"],
                     },
@@ -1100,9 +1139,9 @@ sessionRef = await joinSession({
                             } catch (err) { return { ok: false, error: err.message }; }
                         }
                         if (registry.registered) {
-                            if (!args.profile || !args.workspaceId) return { ok: false, error: "Supply the original launch binding or explicit profile/workspace context" };
+                            if (!args.profile || !(args.workspaceId || args.defenderOnly === true)) return { ok: false, error: "Supply the original launch binding or explicit profile/workspace context" };
                             try {
-                                const c = selectContext(registry, args.profile, args.workspaceId, args.caseId);
+                                const c = selectContext(registry, args.profile, args.workspaceId, args.caseId, { defenderOnly: args.defenderOnly === true });
                                 if (args.tenantId && c.tenantId !== args.tenantId) throw new Error("Tenant does not match profile");
                                 return await inTenant(c, () => launchSkill(args.skill, args.entity || ""));
                             } catch (err) { return { ok: false, error: err.message }; }

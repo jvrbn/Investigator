@@ -28,7 +28,8 @@ Usage:
 Tenant ID resolution (in order):
     1. --no-tid flag → omit tid parameter
     2. --tid <GUID> → use explicit value
-    3. config.json tenant_id field → auto-read from workspace root
+    3. config.json tenant_id field → auto-read from workspace root (skipped when a `tenants`
+       registry is configured: pass --tid for the tenant you are investigating)
     4. None of the above → omit tid parameter
 
 Output:
@@ -57,7 +58,9 @@ from pathlib import Path
 def _load_tenant_id() -> str | None:
     """Try to load tenant_id from config.json in the workspace root.
 
-    Returns the tenant GUID if found and not a placeholder, else None.
+    Returns the tenant GUID if found and not a placeholder, else None. When a tenant registry
+    (`tenants`) is configured the root-level tenant_id is the legacy default and must not leak
+    into another tenant's link, so nothing is returned and --tid has to be explicit.
     """
     # Walk up from this script's location to find config.json
     script_dir = Path(__file__).resolve().parent
@@ -67,6 +70,8 @@ def _load_tenant_id() -> str | None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     config = json.load(f)
+                if config.get("tenants"):
+                    return None
                 tid = config.get("tenant_id", "")
                 if tid and "YOUR_" not in tid and tid != "":
                     return tid
@@ -114,7 +119,8 @@ def main():
     )
     parser.add_argument(
         "--tid", default=None,
-        help="Tenant ID to append. If omitted, reads from config.json."
+        help="Tenant ID to append. If omitted, reads the root tenant_id from config.json "
+             "(not done when a `tenants` registry is configured: pass --tid explicitly)."
     )
     parser.add_argument(
         "--no-tid", action="store_true",

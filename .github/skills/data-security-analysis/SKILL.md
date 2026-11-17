@@ -51,7 +51,7 @@ This skill analyzes **DataSecurityEvents** (Microsoft Purview Insider Risk Manag
 > **⛔ Shortcut Default Rule:** When a matching shortcut exists for the investigation context, **use it** — don't run the full workflow. Only run the full Phase 1-5 sequence when the user explicitly requests "full analysis", "comprehensive", or "tenant-wide overview". Shortcuts render only the report sections relevant to their query chain (plus Executive Summary and Recommendations, always).
 
 ### When invoked from a parent skill (threat-pulse, incident-investigation, user-investigation):
-- Inherit the workspace selection from the parent investigation context
+- Inherit the workspace selection (and, in registry mode, the tenant profile and case context) from the parent investigation context
 - **Skip output mode prompts** — default to inline chat (the parent skill controls the final output format)
 - Match the TP Q# trigger to the shortcuts above and execute that chain with entity substitution
 - Use **30d lookback** (AH default) unless the parent specifies otherwise
@@ -73,6 +73,7 @@ This skill analyzes **DataSecurityEvents** (Microsoft Purview Insider Risk Manag
 9. **ALWAYS run the Label Coverage Assessment** (Query 11 quick stats variant) during Phase 1 to determine if this environment has significant label usage. Adapt the report accordingly (see Rule 11)
 10. **NEVER report sensitivity label GUIDs without attempting name resolution** — use the label mapping strategy below
 11. **ALWAYS use `split()` on `SensitivityLabelId`** — this column can contain comma-separated GUIDs (one per sub-entity), not a single GUID
+12. **ALWAYS keep custom GUID mappings tenant-local** — when `config.json` has a `tenants` registry, read custom SIT/label names and `sit_priority` only from the selected tenant (`python scripts/tenant_context.py mappings <context>`), never from root-level keys or another tenant, and save resolved names only to that same tenant's profile (see [Tenant profiles](#tenant-profiles-registry-mode))
 
 ### ⛔ PROHIBITED ACTIONS
 
@@ -84,10 +85,23 @@ This skill analyzes **DataSecurityEvents** (Microsoft Purview Insider Risk Manag
 | Reporting sensitivity label GUIDs without name resolution attempt | ❌ **PROHIBITED** |
 | Running `mv-expand` on SensitiveInfoTypeInfo without pre-filtering with `has` | ❌ **PROHIBITED** — performance killer at scale |
 | Assuming `SensitiveInfoTypeInfo` is native dynamic | ❌ **PROHIBITED** — it's `Collection(String)`, requires double-parse |
+| Reusing or merging one tenant's custom SIT/label names or `sit_priority` tiers for another tenant (registry mode) | ❌ **PROHIBITED** — custom GUIDs are tenant-specific; a borrowed name is a wrong finding |
 
 ---
 
 ## SIT GUID Mapping Strategy
+
+### Tenant profiles (registry mode)
+
+Custom/EDM SIT GUIDs, custom label GUIDs, renamed default labels and SIT priority tiers belong to **one tenant**. The same GUID can mean different things in two tenants, and an unresolved GUID must stay unresolved rather than borrow another tenant's name.
+
+When `config.json` contains a `tenants` registry (see [Tenant contexts](../../../docs/tenant-contexts.md#tenant-local-mappings)), `<context>` below is the selected case's `reports/tenants/<profile>/<case>/context.json`:
+
+- **Read** Tier 2 data only from the selected tenant: `python scripts/tenant_context.py mappings <context>` prints that tenant's `sit_mapping`, `label_mapping` and `sit_priority` (equivalently, the keys inside `tenants.<profile>`). Do **not** read the root-level keys shown in the Tier 2 examples below, and never merge mappings across profiles. Tier 1 (the embedded well-known GUIDs) is shared and still applies; a tenant's `label_mapping` overrides it for the same GUID.
+- **Save** resolved names only into the same profile's `tenants.<profile>.sit_mapping` / `label_mapping` / `sit_priority`, and only after the analyst agrees. Keys are GUIDs; `sit_mapping` and `label_mapping` values are single-line names of at most 160 characters; `sit_priority` values are `High`, `Medium` or `Low`. A malformed entry makes `tenant_context.py` reject the whole registry, so check each value before saving.
+- **Label** every resolution table and result with the profile and tenant ID, and keep each tenant's results in its own case directory.
+
+Without a registry (legacy single-tenant layout) the root-level `sit_mapping`, `label_mapping` and `sit_priority` keys shown below are the Tier 2 source.
 
 ### The Problem
 
@@ -107,7 +121,7 @@ The query library below includes a `datatable` of the **most common Microsoft SI
 
 #### Tier 2: User-Provided Custom SIT Mapping (config-driven)
 
-If the user has custom/EDM SITs, they can provide a mapping in `config.json` under a `sit_mapping` key:
+If the user has custom/EDM SITs, they can provide a mapping in `config.json` under a `sit_mapping` key (registry mode: inside the selected tenant's profile, `tenants.<profile>.sit_mapping`):
 
 ```json
 {
@@ -118,7 +132,7 @@ If the user has custom/EDM SITs, they can provide a mapping in `config.json` und
 }
 ```
 
-**At skill startup:** Check if `config.json` has a `sit_mapping` section. If yes, merge it into the KQL `datatable` for name resolution.
+**At skill startup:** Check for a `sit_mapping` — legacy layout: the root `config.json`; registry mode: `python scripts/tenant_context.py mappings <context>`. If present, merge it into the KQL `datatable` for name resolution.
 
 #### Tier 3: PowerShell Resolution (optional, on-demand)
 
@@ -134,15 +148,19 @@ If the user agrees:
 Get-DlpSensitiveInformationType -Identity "<GUID>" | Select-Object Name, Id, Publisher
 ```
 
-**After resolution:** Offer to save the mapping to `config.json` for future runs.
+> **Multi-tenant:** In registry mode, run this only in a Security & Compliance PowerShell session connected to the **selected tenant's** organization, and confirm that organization matches the case's `tenant_id` first. A session connected to a different tenant resolves against that tenant's definitions. If you cannot connect to the selected tenant, leave the GUIDs as `[Unknown]` and say so.
+
+**After resolution:** Offer to save the mapping for future runs (legacy layout: root `config.json`; registry mode: the selected tenant's profile only).
 
 #### Post-Resolution Persistence (MANDATORY)
 
 After Tier 3 PowerShell resolution completes, **always offer** to persist the resolved GUIDs:
 
 > "I resolved N SIT GUIDs via PowerShell. Would you like me to save these to `config.json` under `sit_mapping` so future runs resolve them automatically via Tier 2?"
+>
+> In registry mode, name the target: "…under `tenants.<profile>.sit_mapping` for profile `<profile>` (tenant `<tenant_id>`)…".
 
-If the user agrees, read the current `config.json`, add/merge a `sit_mapping` object with the resolved GUIDs, and write it back. Format:
+If the user agrees, read the current `config.json`, add/merge a `sit_mapping` object with the resolved GUIDs, and write it back. In registry mode the object goes **inside `tenants.<profile>`** of the selected tenant only — never at the root and never in another profile. Format (legacy root layout; registry mode nests the same object under `tenants.<profile>`):
 
 ```json
 {
@@ -201,11 +219,11 @@ The query library includes a `datatable` of **Microsoft default sensitivity labe
 | `000a` | 10 | All Employees | Highly Confidential |
 | `000b` | 11 | Specified People | Highly Confidential |
 
-> **Older/customized tenants:** Admins may have renamed default labels or deleted and recreated parent labels with random GUIDs. If `Get-Label` returns a different GUID for "Confidential" or "Highly Confidential" (not matching `defa4170-*`), the tenant has custom parent labels — add them via `config.json` (Tier 2).
+> **Older/customized tenants:** Admins may have renamed default labels or deleted and recreated parent labels with random GUIDs. If `Get-Label` returns a different GUID for "Confidential" or "Highly Confidential" (not matching `defa4170-*`), the tenant has custom parent labels — add them via `config.json` (Tier 2; registry mode: that tenant's `label_mapping`). Never copy another tenant's parent-label GUIDs or renamed defaults.
 
 #### Tier 2: User-Provided Custom Label Mapping (config-driven)
 
-Custom labels (org-created) have random GUIDs. Users can provide a mapping in `config.json`:
+Custom labels (org-created) have random GUIDs. Users can provide a mapping in `config.json` (registry mode: inside the selected tenant's profile, `tenants.<profile>.label_mapping`):
 
 ```json
 {
@@ -221,7 +239,7 @@ Custom labels (org-created) have random GUIDs. Users can provide a mapping in `c
 
 **Renamed defaults:** If a tenant has renamed default labels (e.g., `defa4170...0000` → "Non-business" instead of "Personal"), include the renamed GUID in `label_mapping` — Tier 2 entries override Tier 1 defaults.
 
-**At skill startup:** Check if `config.json` has a `label_mapping` section. If yes, merge it into the KQL `datatable` for name resolution. Tier 2 entries take precedence over Tier 1 defaults for the same GUID.
+**At skill startup:** Check for a `label_mapping` — legacy layout: the root `config.json`; registry mode: `python scripts/tenant_context.py mappings <context>`. If present, merge it into the KQL `datatable` for name resolution. Tier 2 entries take precedence over Tier 1 defaults for the same GUID.
 
 #### Tier 3: PowerShell Resolution (optional, on-demand)
 
@@ -237,7 +255,9 @@ If the user agrees:
 Get-Label | Select-Object DisplayName, @{N='LabelGuid';E={$_.Guid.ToString()}}, ParentLabelDisplayName | Format-List
 ```
 
-**After resolution:** Offer to save the mapping to `config.json` under `label_mapping` for future runs (same persistence pattern as SIT mapping).
+> **Multi-tenant:** In registry mode, run this only in a Security & Compliance PowerShell session connected to the **selected tenant's** organization (confirm it matches the case's `tenant_id` first); otherwise leave the labels as `[Unknown]` and say so.
+
+**After resolution:** Offer to save the mapping under `label_mapping` for future runs (same persistence pattern as SIT mapping — in registry mode, into the selected tenant's profile only).
 
 > **Key difference from SIT resolution:** Labels use `Get-Label` (not `Get-DlpSensitiveInformationType`). The cmdlet returns ALL labels at once — no need to query by individual GUID.
 
@@ -253,7 +273,7 @@ Get-Label | Select-Object DisplayName, @{N='LabelGuid';E={$_.Guid.ToString()}}, 
 - Best for quick review and follow-up questions
 
 ### Mode 2: Markdown File Report
-- Save to `reports/data-security/DataSecurity_Analysis_<scope>_<timestamp>.md`
+- Save to `reports/data-security/DataSecurity_Analysis_<scope>_<timestamp>.md` — in registry mode save into the case's `report_dir` from `context.json` (`reports/tenants/<profile>/<case>/`) instead, never the shared folder, and put the profile, tenant ID and case ID in the report header
 - Full detail including all phases, temporal charts, file inventories
 - Use `create_file` tool — NEVER use terminal commands for file output
 - **Filename pattern:** `DataSecurity_Analysis_<scope>_YYYYMMDD_HHMMSS.md`
@@ -264,7 +284,7 @@ Get-Label | Select-Object DisplayName, @{N='LabelGuid';E={$_.Guid.ToString()}}, 
 ## Quick Start (TL;DR)
 
 1. **Determine scope** → Tenant-wide overview? Specific SIT? Specific user? Specific label? Time range?
-2. **Check config.json** → Look for `sit_mapping` and `label_mapping` sections for custom name resolution
+2. **Check mappings** → Look for `sit_mapping` and `label_mapping` for custom name resolution (registry mode: only the selected tenant's, via `tenant_context.py mappings <context>`; otherwise root `config.json`)
 3. **Run Phase 1** → Query 1 (SIT Discovery) + Label Coverage Assessment (quick stats variant) to determine environment maturity
 4. **Run Phase 2** → Queries 2-5 (breakdowns by action type, user, file, time)
 5. **Run Phase 2.5** → Queries 16a-16d (Copilot SIT exposure analysis) — **conditional on Copilot volume** (see Phase 2.5 trigger)
@@ -283,7 +303,7 @@ Get-Label | Select-Object DisplayName, @{N='LabelGuid';E={$_.Guid.ToString()}}, 
 1. Run **Query 1** (SIT Discovery) — returns top SIT GUIDs with hit counts
 2. Run **Label Coverage Assessment** (quick stats from Query 11 comment block) — returns label vs SIT coverage percentages
 3. Apply Tier 1 mapping (embedded `datatable`) to resolve known SIT and label GUIDs
-4. Check `config.json` for Tier 2 mapping (`sit_mapping` + `label_mapping`) to resolve custom GUIDs
+4. Check for Tier 2 mapping (`sit_mapping` + `label_mapping`) to resolve custom GUIDs — registry mode: the selected tenant's only (`python scripts/tenant_context.py mappings <context>`); legacy layout: root `config.json`
 5. Flag any remaining unresolved GUIDs for optional Tier 3 (PowerShell)
 6. Present the SIT + label landscape to the user before proceeding
 7. **Determine label analysis depth** based on coverage (see Rule 11)
@@ -326,7 +346,7 @@ Run these queries in parallel where possible:
 | 🟡 **Medium** | Project code names (custom), Employee IDs (custom) | Business-sensitive but not directly exploitable |
 | 🔵 **Low** | All Full Names, IP Addresses, Physical Addresses, Medical Terms | High-volume, low-specificity — noise in Copilot context |
 
-> **Custom SIT classification:** Organizations should classify their custom/EDM SITs into these tiers. If `config.json` has a `sit_priority` section (mapping GUID → tier), use it. Otherwise, classify custom SITs as 🔴 High by default (conservative).
+> **Custom SIT classification:** Organizations should classify their custom/EDM SITs into these tiers. If a `sit_priority` mapping (GUID → tier) exists — legacy layout: root `config.json`; registry mode: the selected tenant's own `sit_priority` from `tenant_context.py mappings <context>` — use it. Otherwise, classify custom SITs as 🔴 High by default (conservative). Never apply another tenant's tiers.
 
 ---
 
@@ -362,11 +382,11 @@ Render findings using the Report Template below.
 
 ### Well-Known SIT GUID Mapping (datatable)
 
-Use this `let` block as a prefix for any query that needs name resolution. It covers the most common Microsoft SITs plus placeholders for custom SITs from `config.json`.
+Use this `let` block as a prefix for any query that needs name resolution. It covers the most common Microsoft SITs plus placeholders for custom SITs from the Tier 2 `sit_mapping` of the selected tenant (see [SIT GUID Mapping Strategy](#sit-guid-mapping-strategy)).
 
 ```kql
 // Well-known SIT GUID mapping — covers ~90% of typical detections
-// Add custom/EDM SIT GUIDs from config.json sit_mapping section
+// Add custom/EDM SIT GUIDs from the selected tenant's Tier 2 sit_mapping only
 let SITMapping = datatable(SITId: string, SITName: string) [
     // ── Financial ──
     "50842eb7-edc8-4019-85dd-5a5c1f2bb085", "Credit Card Number",
@@ -393,13 +413,13 @@ let SITMapping = datatable(SITId: string, SITName: string) [
     "0b34bec3-d5d6-4974-b7b0-dcdb5c90c29d", "Azure IoT Connection String",
     "c7bc98e8-551a-4c35-a92d-d2c8cda714a7", "Azure Storage Account Key",
     "095a7e6c-efd8-46d5-af7b-5298d53a49fc", "Azure Redis Cache Connection String",
-    // ─── ADD CUSTOM / EDM SITs FROM config.json sit_mapping HERE ───
+    // ─── ADD CUSTOM / EDM SITs FROM THE SELECTED TENANT'S sit_mapping HERE ───
     // Example: "<your-edm-guid>", "Your EDM SIT Name",
     "END_MARKER", "END_MARKER"
 ];
 ```
 
-> **Instructions:** When building queries, read `config.json` for `sit_mapping` entries and insert them into the `datatable` above, replacing the `END_MARKER` row. If no custom mapping exists, remove the `END_MARKER` row.
+> **Instructions:** When building queries, read the Tier 2 `sit_mapping` entries (registry mode: only the selected tenant's, from `tenant_context.py mappings <context>`; legacy layout: root `config.json`) and insert them into the `datatable` above, replacing the `END_MARKER` row. If no custom mapping exists, remove the `END_MARKER` row.
 
 ---
 
@@ -692,13 +712,13 @@ recent
 
 ### Well-Known Label GUID Mapping (datatable)
 
-Use this `let` block as a prefix for label queries that need name resolution. It covers the Microsoft default sensitivity labels plus placeholder slots for custom labels from `config.json`.
+Use this `let` block as a prefix for label queries that need name resolution. It covers the Microsoft default sensitivity labels plus placeholder slots for custom labels from the selected tenant's Tier 2 `label_mapping`.
 
 ```kql
 // Microsoft default sensitivity label GUID mapping — all 12 labels
 // Confirmed via Get-Label on default-configuration tenants
 // Older tenants may have renamed labels or replaced parent GUIDs — validate with Get-Label if needed
-// Add custom labels from config.json label_mapping section
+// Add custom labels from the selected tenant's Tier 2 label_mapping only
 let LabelMapping = datatable(LabelId: string, LabelName: string, LabelParent: string) [
     // ── Microsoft Default Labels (defa4170-0d19-0005-XXXX-bc88714345d2 family) ──
     // Priority 0-11, sequential GUID suffixes
@@ -714,13 +734,13 @@ let LabelMapping = datatable(LabelId: string, LabelName: string, LabelParent: st
     "defa4170-0d19-0005-0009-bc88714345d2", "Highly Confidential", "",
     "defa4170-0d19-0005-000a-bc88714345d2", "All Employees", "Highly Confidential",
     "defa4170-0d19-0005-000b-bc88714345d2", "Specified People", "Highly Confidential",
-    // ─── ADD CUSTOM LABELS FROM config.json label_mapping HERE ───
+    // ─── ADD CUSTOM LABELS FROM THE SELECTED TENANT'S label_mapping HERE ───
     // Example: "<your-custom-label-guid>", "Your Custom Label", "Parent Label",
     "END_MARKER", "END_MARKER", "END_MARKER"
 ];
 ```
 
-> **Instructions:** When building queries, read `config.json` for `label_mapping` entries and insert them into the `datatable` above, replacing the `END_MARKER` row. **Older/customized tenants:** If `Get-Label` shows parent labels (Confidential, Highly Confidential) with random GUIDs instead of `defa4170-*`, the admin has recreated them — add the tenant-specific GUIDs from `config.json` `label_mapping` or `Get-Label`. If resolved sub-label names differ from the datatable (e.g., "Non-business" vs "Personal"), prefer the `Get-Label` name for that tenant.
+> **Instructions:** When building queries, read the Tier 2 `label_mapping` entries (registry mode: only the selected tenant's, from `tenant_context.py mappings <context>`; legacy layout: root `config.json`) and insert them into the `datatable` above, replacing the `END_MARKER` row. **Older/customized tenants:** If `Get-Label` shows parent labels (Confidential, Highly Confidential) with random GUIDs instead of `defa4170-*`, the admin has recreated them — add the tenant-specific GUIDs from that tenant's `label_mapping` or `Get-Label`. If resolved sub-label names differ from the datatable (e.g., "Non-business" vs "Personal"), prefer the `Get-Label` name for that tenant.
 
 ---
 
@@ -900,7 +920,7 @@ DataSecurityEvents
 
 **Purpose:** Break down which SITs fire in Copilot interactions, classify by priority tier, and quantify service account vs human split. This is the entry point for Phase 2.5.
 
-> **Prerequisite:** Merge the well-known SIT GUID mapping datatable (above) with any `config.json` `sit_mapping` entries before running.
+> **Prerequisite:** Merge the well-known SIT GUID mapping datatable (above) with the selected tenant's Tier 2 `sit_mapping` entries (registry mode: `tenant_context.py mappings <context>`; legacy layout: root `config.json`) before running.
 
 ```kql
 // Query 16a: Copilot SIT Landscape — priority-tiered breakdown with agent/human split
@@ -914,10 +934,10 @@ let HighPrioritySITs = dynamic([
     "0b34bec3-d5d6-4974-b7b0-dcdb5c90c29d",  // Azure IoT Connection String
     "c7bc98e8-551a-4c35-a92d-d2c8cda714a7",  // Azure Storage Account Key
     "095a7e6c-efd8-46d5-af7b-5298d53a49fc"   // Azure Redis Cache Connection String
-    // ── ADD credential/HR SIT GUIDs from config.json sit_mapping HERE ──
+    // ── ADD credential/HR SIT GUIDs from the selected tenant's sit_mapping HERE ──
 ]);
 let MediumPrioritySITs = dynamic([
-    // ── ADD project/employee ID SIT GUIDs from config.json sit_mapping HERE ──
+    // ── ADD project/employee ID SIT GUIDs from the selected tenant's sit_mapping HERE ──
 ]);
 // ── Service account regex (update with org-specific patterns) ──
 let ServiceAccountPattern = @"^(securitycopilotagentuser-|svc-)";
@@ -948,8 +968,8 @@ DataSecurityEvents
 ```
 
 **Post-processing:**
-- Populate `HighPrioritySITs` and `MediumPrioritySITs` arrays with credential, HR, and custom SIT GUIDs from `config.json` `sit_mapping`. Any SIT not in either array defaults to Low.
-- If `config.json` has a `sit_priority` section (GUID → tier mapping), use it to override the default classification.
+- Populate `HighPrioritySITs` and `MediumPrioritySITs` arrays with credential, HR, and custom SIT GUIDs from the selected tenant's `sit_mapping`. Any SIT not in either array defaults to Low.
+- If the selected tenant has a `sit_priority` mapping (GUID → tier; registry mode: from `tenant_context.py mappings <context>`, legacy layout: root `config.json`), use it to override the default classification.
 - Calculate **Agent % of total** — if > 50%, flag prominently in report ("⚠️ N% of Copilot SIT events are from automated service accounts").
 - Unknown SITs (`[Unknown]`) should be classified as 🔴 High by default (conservative — unknown custom SITs may be high-value EDM/exact data match).
 
@@ -995,7 +1015,7 @@ DataSecurityEvents
 
 ```kql
 // Query 16c: Daily Copilot SIT trend by priority category (human users only)
-// ── Copy HighPrioritySITs from Query 16a (canonical list: CCN, SSN, Azure credentials + config.json custom) ──
+// ── Copy HighPrioritySITs from Query 16a (canonical list: CCN, SSN, Azure credentials + the selected tenant's custom SITs) ──
 // ── Copy ServiceAccountPattern from Query 16a ──
 DataSecurityEvents
 | where Timestamp > ago(30d)
@@ -1319,14 +1339,14 @@ If Copilot events are <30% of total, skip Phase 2.5 entirely and note in the Cop
 ### Markdown File Format
 
 Same structure as inline, wrapped in proper markdown with:
-- Report metadata header (generated timestamp, scope, tool versions)
+- Report metadata header (generated timestamp, scope, tool versions; registry mode: profile, tenant ID, case ID)
 - **Scope & Limitations section** immediately after Executive Summary (see Rule 5 above)
 - Each section as H2/H3
 - **File-based user ranking** as the primary risk section (NOT the Copilot-dominated overall ranking)
 - DLP Policy Match section with DefaultRule explanation for empty PolicyName entries
 - **Sensitivity Label sections** (if coverage ≥1% or user requested): Label Landscape, Label-Based Top Users, Label Changes, Copilot Label Exposure
 - Code fences for any raw data samples
-- Save to: `reports/data-security/DataSecurity_Analysis_<scope>_YYYYMMDD_HHMMSS.md`
+- Save to: `reports/data-security/DataSecurity_Analysis_<scope>_YYYYMMDD_HHMMSS.md` (registry mode: the case's `report_dir` instead — see Output Modes)
 
 ---
 
@@ -1354,7 +1374,7 @@ Same structure as inline, wrapped in proper markdown with:
 | **`SensitivityLabelId` can contain comma-separated GUIDs** | When an event involves multiple sub-entities (e.g., Copilot accessing multiple labeled resources), the `SensitivityLabelId` column contains comma-separated GUIDs like `aaaa-...,aaaa-...,bbbb-...`. This is NOT a single GUID | Always `split(SensitivityLabelId, ",")` then `mv-expand` to handle multi-GUID values. Querying with `== "<GUID>"` will miss events; use `has "<GUID>"` for filtering or `split()` + `mv-expand` for enumeration |
 | **`RiskyAIUsageSensitivityLabelsInfo` is mostly `[null]`** | The column is populated on 90%+ of Copilot events, but almost all contain `[null]` (a JSON array with a literal null element). Only events where Copilot actually accessed labeled resources have real data | Filter with `tostring(RiskyAIUsageSensitivityLabelsInfo) !has "null"` to exclude the null-dominated rows. The `isnotempty()` check alone is insufficient — `[null]` passes it |
 | **Label GUIDs have no `ClassifierType` field** | Unlike SIT GUIDs which have `ClassifierType: "Content"` or `"MLModel"`, label GUIDs have no built-in type indicator. Resolution requires external lookup (datatable, config, or PowerShell `Get-Label`) | Use the Label GUID Mapping Strategy (3 tiers). Unknown labels display as `[Unknown] <GUID>` |
-| **Default label GUIDs are deterministic but not officially documented** | All 12 default labels (including parents) use `defa4170-0d19-0005-XXXX-bc88714345d2` with sequential suffixes `0000`–`000b` (confirmed via `Get-Label` on default-configuration tenants). However, Microsoft does not publish these GUIDs in official docs. **Older/customized tenants** may have: (a) renamed default labels (e.g., "Non-business" instead of "Personal"), (b) replaced parent label GUIDs with random tenant-specific ones, or (c) added custom sub-labels that break the sequential pattern | The embedded datatable includes all 12 confirmed default GUIDs. For tenants with custom parent GUIDs, add them via `config.json` `label_mapping`. If `Get-Label` returns different names for a `defa4170` GUID, prefer the `Get-Label` name for that tenant |
+| **Default label GUIDs are deterministic but not officially documented** | All 12 default labels (including parents) use `defa4170-0d19-0005-XXXX-bc88714345d2` with sequential suffixes `0000`–`000b` (confirmed via `Get-Label` on default-configuration tenants). However, Microsoft does not publish these GUIDs in official docs. **Older/customized tenants** may have: (a) renamed default labels (e.g., "Non-business" instead of "Personal"), (b) replaced parent label GUIDs with random tenant-specific ones, or (c) added custom sub-labels that break the sequential pattern | The embedded datatable includes all 12 confirmed default GUIDs. For tenants with custom parent GUIDs, add them to that tenant's `label_mapping` (registry mode: `tenants.<profile>.label_mapping`; legacy layout: root `config.json`). If `Get-Label` returns different names for a `defa4170` GUID, prefer the `Get-Label` name for that tenant |
 | **`PreviousSensitivityLabelId` can equal `SensitivityLabelId`** | On "Label removed from a file" events, both fields may contain the same GUID (the label that was removed). The current label after removal may be empty | Check `ActionType` to distinguish: "Label downgraded" = actual label change; "Label removed" = label stripped (current may be empty); "Label on file downgraded or removed, then file accessed by Copilot" = compound event with Copilot exposure |
 | **Label-only events require label-aware DLP/IRM policies** | Events with labels but no SIT content (Query 15) only appear if a DLP or IRM policy explicitly targets sensitivity labels. Environments with no label-based policies will see zero label-only events even if documents are labeled | If Query 15 returns 0 results AND labels exist (Query 11 > 0), this indicates no label-based DLP/IRM policies are configured — mention this as a gap in the report |
 | **Copilot service accounts inflate event counts** | Automated service accounts can generate 50-70% of all Copilot events. See **Rule 13** for full requirements | Filter: `where not(AccountUpn matches regex ServiceAccountPattern)` (defined in Query 16a). Run Query 16a to quantify agent vs human split |
@@ -1374,7 +1394,7 @@ Same structure as inline, wrapped in proper markdown with:
 | PowerShell `Get-DlpSensitiveInformationType` fails | Not connected to IPPS session | Run `Connect-IPPSSession -UserPrincipalName <UPN>` first |
 | `The term 'Get-DlpSensitiveInformationType' is not recognized` | Module not installed or IPPS session in different terminal | `Install-Module ExchangeOnlineManagement` then `Connect-IPPSSession` in the same terminal session |
 | `The term 'Get-Label' is not recognized` | Not connected to IPPS session or module not loaded | Same as above — `Connect-IPPSSession` provides both `Get-DlpSensitiveInformationType` and `Get-Label` |
-| Label GUIDs all show as `[Unknown]` | Default label datatable doesn't match target tenant (parent GUIDs vary) | Resolve via `Get-Label` and persist to `config.json` `label_mapping` |
+| Label GUIDs all show as `[Unknown]` | Default label datatable doesn't match target tenant (parent GUIDs vary) | Resolve via `Get-Label` in the selected tenant's session and persist to that tenant's `label_mapping` (registry mode: `tenants.<profile>.label_mapping`; legacy layout: root `config.json`) |
 
 ---
 

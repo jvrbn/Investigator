@@ -5,12 +5,23 @@
 The original runbook below configures **one target tenant at a time**. It is
 not the orchestration model for simultaneous customer investigations.
 
-For tenant profiles, immutable run contexts, and authenticated read-only
-validation, use [Tenant contexts](tenant-contexts.md). Mission Control uses
-explicit tenant/workspace launch contexts and scoped state; the
+For tenant profiles, immutable run contexts, the capability ledger and
+authenticated read-only validation, use [Tenant contexts](tenant-contexts.md).
+For analysts who reach other tenants as B2B guests, or through Defender
+multitenant management, read
+[Multi-tenant access: B2B guests and Defender multitenant management](b2b-mto-multi-tenant.md).
+Mission Control uses explicit tenant/workspace launch contexts and scoped state; the
 [cross-tenant-hunt workflow](../.github/skills/cross-tenant-hunt/SKILL.md)
 coordinates selected scopes without assuming one shared authenticated session
 can access every tenant.
+
+For simultaneous tenants, do **not** put one tenant's header on the shared server
+entries below. Register each tenant as a profile with its own connection names and run
+`python scripts/tenant_context.py render-mcp --profile <profile>`: it prints one server
+entry per connection (for example `sentinel-data-<tenant>`) carrying that tenant's
+`x-mcp-client-tenant-id`. It configures nothing; merge the entries by hand, restart the
+servers, and sign in with an account that belongs to that tenant. Triage is rendered only
+for a profile whose declared home tenant is its own tenant.
 
 Key acceptance boundaries for multi-tenant operation:
 
@@ -18,11 +29,16 @@ Key acceptance boundaries for multi-tenant operation:
 - Multiple profiles/workspaces require explicit selection. A failed operation
   must not switch tenants or borrow another profile's missing settings.
 - Every run freezes profile, tenant, workspace, connection references, case ID,
-  and time bounds. Changing the UI selection does not retarget that run.
-- Local syntax/profile validation, authenticated Azure/Graph checks, and MCP
-  session verification are separate outcomes. Report each truthfully.
-- Reports, imported agent content, context memory, and Mission Control state
-  remain tenant-scoped. Unscoped legacy findings are not customer evidence.
+  and time bounds (a pinned UTC window). Changing the UI selection does not
+  retarget that run.
+- Local syntax/profile validation, authenticated Azure/Graph/query checks, and
+  MCP session attestations are separate outcomes. The capability ledger records
+  each; only CLI probes are verified by code, and an attestation is a claim.
+  Report each truthfully.
+- Reports, imported agent content, context memory, tenant-local sensitivity
+  mappings and Mission Control state remain tenant-scoped. Unscoped legacy
+  findings are not customer evidence. Once a registry exists, the legacy report
+  writers refuse to run without a case context.
 - Cross-tenant hunts are read-only. Report unavailable, failed, unverified,
   and successfully searched scopes separately; aggregate only permitted data.
 - Triage guest/delegated access remains unsupported. A tenant header does not

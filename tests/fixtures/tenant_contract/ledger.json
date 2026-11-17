@@ -1,0 +1,281 @@
+{
+  "_comment": "Shared by tests/test_tenant_context.py and .github/extensions/skills-canvas/tenant-context.test.mjs. Synthetic values only. An entry is a full `record`, or a patch of an earlier entry (`from` names it; `set` overrides and `unset` removes fields). `valid` says whether a reader must accept the file. Files whose name is not <UTC stamp with microseconds>-<capability>.json are always ignored. Records are placed so that every invalid file sorts after the valid one for the same capability: accepting it would change the effective result.",
+  "scenarios": [
+    {
+      "name": "workspace case: proof mix, expiry, supersession and forged files",
+      "context": {
+        "schema_version": 2,
+        "profile": "contoso",
+        "tenant_id": "11111111-1111-4111-8111-111111111111",
+        "workspace": {"id": "44444444-4444-4444-8444-444444444444", "name": "contoso-primary", "subscription_id": "33333333-3333-4333-8333-333333333333", "resource_group": "rg-contoso"},
+        "case_id": "case-one",
+        "lookback_days": 7,
+        "connections": {"data_lake": "contoso-lake", "graph": "contoso-graph", "triage": null},
+        "report_dir": "reports/tenants/contoso/case-one",
+        "created_at": "2024-03-01T12:00:03.000000+00:00",
+        "memory_file": "contoso-context.md",
+        "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+        "window": {"start_utc": "2024-02-23T12:00:00Z", "end_utc": "2024-03-01T12:00:00Z"},
+        "hunt_id": null,
+        "capabilities": ["data_lake", "defender_hunting", "graph", "tenant_identity", "workspace_arm", "workspace_query"]
+      },
+      "now": "2024-03-02T12:00:00Z",
+      "records": [
+        {"name": "tenant_identity_denied", "file": "20240301T120005000000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "tenant_identity", "status": "denied", "method": "cli_probe", "checked_at": "2024-03-01T12:00:05Z", "expires_at": "2024-03-02T12:00:05Z", "detail": "Graph organization did not match the selected tenant", "via": null}},
+        {"name": "tenant_identity_lifetime_limit", "file": "20240301T120700000000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:07:00Z", "expires_at": "2024-03-08T12:07:00Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "tenant_identity_stamp_just_under_two_seconds", "file": "20240301T120859999999Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:08:58Z", "expires_at": "2024-03-02T12:08:58Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "tenant_identity_verified", "file": "20240301T121000500000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:00Z", "expires_at": "2024-03-02T12:10:00Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "other_tenant", "file": "20240301T121000500001Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"tenant_id": "22222222-2222-4222-8222-222222222222"}},
+        {"name": "other_profile", "file": "20240301T121000500002Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"profile": "fabrikam"}},
+        {"name": "other_case", "file": "20240301T121000500003Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"case_id": "case-two"}},
+        {"name": "workspace_on_tenant_wide_capability", "file": "20240301T121000500004Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"workspace_id": "44444444-4444-4444-8444-444444444444"}},
+        {"name": "unknown_capability", "file": "20240301T121000500005Z-root_access.json", "valid": false, "from": "tenant_identity_verified", "set": {"capability": "root_access"}},
+        {"name": "cli_capability_attested_by_agent", "file": "20240301T121000500006Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"method": "agent_attestation", "status": "attested"}},
+        {"name": "cli_probe_with_attested_status", "file": "20240301T121000500007Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"status": "attested"}},
+        {"name": "extra_field", "file": "20240301T121000500008Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"note": "extra"}},
+        {"name": "missing_field", "file": "20240301T121000500009Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "unset": ["via"]},
+        {"name": "expiry_equals_check_time", "file": "20240301T121000500010Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"expires_at": "2024-03-01T12:10:00Z"}},
+        {"name": "lifetime_over_168_hours", "file": "20240301T121000500011Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"expires_at": "2024-03-08T12:10:01Z"}},
+        {"name": "future_dated", "file": "20240302T120600000000Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"checked_at": "2024-03-02T12:06:00Z", "expires_at": "2024-03-03T12:06:00Z", "status": "denied"}},
+        {"name": "file_name_names_other_capability", "file": "20240301T121000500013Z-workspace_arm.json", "valid": false, "from": "tenant_identity_verified"},
+        {"name": "file_stamp_before_check", "file": "20240301T121002900000Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"checked_at": "2024-03-01T12:10:03Z", "expires_at": "2024-03-02T12:10:03Z"}},
+        {"name": "file_stamp_two_seconds_after_check", "file": "20240301T121002000000Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified"},
+        {"name": "token_like_detail", "file": "20240301T121000500016Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"detail": "Graph reported eyJfake00000000 for the tenant"}},
+        {"name": "password_like_detail", "file": "20240301T121000500017Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"detail": "password: hunter2"}},
+        {"name": "bearer_like_detail", "file": "20240301T121000500018Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"detail": "bearer 0123456789abcdef"}},
+        {"name": "blank_detail", "file": "20240301T121000500019Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"detail": "  \t "}},
+        {"name": "oversized_detail", "file": "20240301T121000500020Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}},
+        {"name": "control_character_detail", "file": "20240301T121000500021Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"detail": "bad\u0007bell"}},
+        {"name": "schema_version_two", "file": "20240301T121000500022Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"schema_version": 2}},
+        {"name": "schema_version_text", "file": "20240301T121000500023Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"schema_version": "1"}},
+        {"name": "schema_version_boolean", "file": "20240301T121000500024Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"schema_version": true}},
+        {"name": "kind_other", "file": "20240301T121000500025Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"kind": "other"}},
+        {"name": "checked_at_milliseconds", "file": "20240301T121000500026Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"checked_at": "2024-03-01T12:10:00.000Z"}},
+        {"name": "checked_at_offset", "file": "20240301T121000500027Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"checked_at": "2024-03-01T12:10:00+00:00"}},
+        {"name": "expires_at_not_text", "file": "20240301T121000500028Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"expires_at": 5}},
+        {"name": "status_unknown", "file": "20240301T121000500029Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"status": "ok"}},
+        {"name": "method_not_text", "file": "20240301T121000500030Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"method": ["cli_probe"]}},
+        {"name": "capability_not_text", "file": "20240301T121000500031Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified", "set": {"capability": ["tenant_identity"]}},
+        {"name": "file_stamp_impossible_date", "file": "20240230T121000000000Z-tenant_identity.json", "valid": false, "from": "tenant_identity_verified"},
+        {"name": "file_name_without_stamp", "file": "readme.json", "valid": false, "from": "tenant_identity_verified"},
+        {"name": "file_name_wrong_extension", "file": "20240301T121000500034Z-tenant_identity.json.bak", "valid": false, "from": "tenant_identity_verified"},
+        {"name": "file_name_uppercase_capability", "file": "20240301T121000500035Z-Tenant_identity.json", "valid": false, "from": "tenant_identity_verified"},
+        {"name": "workspace_arm_verified", "file": "20240301T121001000000Z-workspace_arm.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": "44444444-4444-4444-8444-444444444444", "case_id": "case-one", "capability": "workspace_arm", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:01Z", "expires_at": "2024-03-02T12:10:01Z", "detail": "ARM subscription tenant and workspace customerId matched the selected workspace", "via": null}},
+        {"name": "workspace_arm_other_workspace", "file": "20240301T121001000001Z-workspace_arm.json", "valid": false, "from": "workspace_arm_verified", "set": {"workspace_id": "55555555-5555-4555-8555-555555555555"}},
+        {"name": "workspace_arm_without_workspace", "file": "20240301T121001000002Z-workspace_arm.json", "valid": false, "from": "workspace_arm_verified", "set": {"workspace_id": null}},
+        {"name": "workspace_query_expired", "file": "20240228T120000000000Z-workspace_query.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": "44444444-4444-4444-8444-444444444444", "case_id": "case-one", "capability": "workspace_query", "status": "verified", "method": "cli_probe", "checked_at": "2024-02-28T12:00:00Z", "expires_at": "2024-02-29T12:00:00Z", "detail": "Log Analytics query API answered the probe", "via": null}},
+        {"name": "data_lake_attested", "file": "20240301T122000000000Z-data_lake.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": "44444444-4444-4444-8444-444444444444", "case_id": "case-one", "capability": "data_lake", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:20:00Z", "expires_at": "2024-03-02T12:20:00Z", "detail": "Agent listed workspaces through the data lake connection", "via": null}},
+        {"name": "data_lake_with_route", "file": "20240301T122000000001Z-data_lake.json", "valid": false, "from": "data_lake_attested", "set": {"via": "portal"}},
+        {"name": "graph_attested_earlier", "file": "20240301T121500000000Z-graph.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "graph", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:15:00Z", "expires_at": "2024-03-02T12:15:00Z", "detail": "Agent read the organization through the Graph connection", "via": null}},
+        {"name": "graph_denied_later", "file": "20240301T122100000000Z-graph.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "graph", "status": "denied", "method": "agent_attestation", "checked_at": "2024-03-01T12:21:00Z", "expires_at": "2024-03-02T12:21:00Z", "detail": "Graph MCP returned an authorization error", "via": null}},
+        {"name": "hunting_attested_by_portal", "file": "20240301T122200000000Z-defender_hunting.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "defender_hunting", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:22:00Z", "expires_at": "2024-03-02T12:22:00Z", "detail": "Analyst opened Advanced Hunting scoped to this tenant", "via": "portal"}},
+        {"name": "hunting_without_route", "file": "20240301T122200000001Z-defender_hunting.json", "valid": false, "from": "hunting_attested_by_portal", "set": {"via": null}},
+        {"name": "hunting_with_unknown_route", "file": "20240301T122200000002Z-defender_hunting.json", "valid": false, "from": "hunting_attested_by_portal", "set": {"via": "email"}},
+        {"name": "hunting_via_undeclared_triage", "file": "20240301T122200000003Z-defender_hunting.json", "valid": false, "from": "hunting_attested_by_portal", "set": {"via": "triage"}},
+        {"name": "triage_without_connection", "file": "20240301T122300000000Z-triage.json", "valid": false,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-one", "capability": "triage", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:23:00Z", "expires_at": "2024-03-02T12:23:00Z", "detail": "Agent listed incidents through Triage", "via": null}}
+      ],
+      "expect": {
+        "ignored": 42,
+        "blocked": ["graph", "workspace_query"],
+        "effective": {
+          "tenant_identity": {"status": "verified", "required": true, "detail": "Graph organization ID matched the selected tenant"},
+          "workspace_arm": {"status": "verified", "required": true},
+          "workspace_query": {"status": "expired", "last_status": "verified", "required": true},
+          "data_lake": {"status": "attested", "required": true},
+          "graph": {"status": "denied", "required": true, "detail": "Graph MCP returned an authorization error"},
+          "triage": {"status": "unverified", "required": false, "detail": "No connection is declared for this tenant"},
+          "defender_hunting": {"status": "attested", "required": true, "via": "portal"}
+        }
+      }
+    },
+    {
+      "name": "guest tenant hunt child: triage is home-tenant only and undeclared connections stay unverified",
+      "context": {
+        "schema_version": 2,
+        "profile": "fabrikam",
+        "tenant_id": "22222222-2222-4222-8222-222222222222",
+        "workspace": {"id": "66666666-6666-4666-8666-666666666666", "name": "fabrikam-primary", "subscription_id": null, "resource_group": "rg-fabrikam"},
+        "case_id": "hunt-one-02",
+        "lookback_days": 7,
+        "connections": {"data_lake": null, "graph": "fabrikam-graph", "triage": null},
+        "report_dir": "reports/tenants/fabrikam/hunt-one-02",
+        "created_at": "2024-03-01T12:00:04.000000+00:00",
+        "memory_file": null,
+        "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+        "window": {"start_utc": "2024-02-23T12:00:00Z", "end_utc": "2024-03-01T12:00:00Z"},
+        "hunt_id": "hunt-one",
+        "capabilities": ["defender_hunting", "graph", "tenant_identity", "triage", "workspace_arm"]
+      },
+      "now": "2024-03-02T12:00:00Z",
+      "records": [
+        {"name": "tenant_identity_verified", "file": "20240301T121000000000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "fabrikam", "tenant_id": "22222222-2222-4222-8222-222222222222", "workspace_id": null, "case_id": "hunt-one-02", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:00Z", "expires_at": "2024-03-02T12:10:00Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "workspace_arm_verified_with_noisy_whitespace", "file": "20240301T121001000000Z-workspace_arm.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "fabrikam", "tenant_id": "22222222-2222-4222-8222-222222222222", "workspace_id": "66666666-6666-4666-8666-666666666666", "case_id": "hunt-one-02", "capability": "workspace_arm", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:01Z", "expires_at": "2024-03-02T12:10:01Z", "detail": "ARM  subscription\ttenant\nmatched", "via": null}},
+        {"name": "graph_attested", "file": "20240301T122000000000Z-graph.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "fabrikam", "tenant_id": "22222222-2222-4222-8222-222222222222", "workspace_id": null, "case_id": "hunt-one-02", "capability": "graph", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:20:00Z", "expires_at": "2024-03-02T12:20:00Z", "detail": "Agent read the organization through the Graph connection", "via": null}},
+        {"name": "triage_attested_on_guest_tenant", "file": "20240301T122100000000Z-triage.json", "valid": false,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "fabrikam", "tenant_id": "22222222-2222-4222-8222-222222222222", "workspace_id": null, "case_id": "hunt-one-02", "capability": "triage", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:21:00Z", "expires_at": "2024-03-02T12:21:00Z", "detail": "Agent listed incidents through Triage", "via": null}},
+        {"name": "data_lake_attested_without_connection", "file": "20240301T122200000000Z-data_lake.json", "valid": false,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "fabrikam", "tenant_id": "22222222-2222-4222-8222-222222222222", "workspace_id": "66666666-6666-4666-8666-666666666666", "case_id": "hunt-one-02", "capability": "data_lake", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:22:00Z", "expires_at": "2024-03-02T12:22:00Z", "detail": "Agent listed workspaces through the data lake connection", "via": null}},
+        {"name": "hunting_attested_by_portal", "file": "20240301T122300000000Z-defender_hunting.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "fabrikam", "tenant_id": "22222222-2222-4222-8222-222222222222", "workspace_id": null, "case_id": "hunt-one-02", "capability": "defender_hunting", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:23:00Z", "expires_at": "2024-03-02T12:23:00Z", "detail": "Analyst opened Advanced Hunting scoped to this tenant", "via": "portal"}},
+        {"name": "hunting_attested_via_triage_on_guest_tenant", "file": "20240301T122400000000Z-defender_hunting.json", "valid": false, "from": "hunting_attested_by_portal", "set": {"via": "triage", "checked_at": "2024-03-01T12:24:00Z", "expires_at": "2024-03-02T12:24:00Z"}}
+      ],
+      "expect": {
+        "ignored": 3,
+        "blocked": ["triage"],
+        "effective": {
+          "tenant_identity": {"status": "verified", "required": true},
+          "workspace_arm": {"status": "verified", "required": true, "detail": "ARM subscription tenant matched"},
+          "workspace_query": {"status": "unverified", "required": false, "detail": "No check recorded"},
+          "data_lake": {"status": "unverified", "required": false, "detail": "No connection is declared for this tenant"},
+          "graph": {"status": "attested", "required": true},
+          "triage": {"status": "unsupported", "required": true, "detail": "Triage is home-tenant only; declared home tenant differs from this tenant"},
+          "defender_hunting": {"status": "attested", "required": true, "via": "portal"}
+        }
+      }
+    },
+    {
+      "name": "Defender-only case: workspace capabilities are unsupported even with structurally valid records",
+      "context": {
+        "schema_version": 2,
+        "profile": "contoso",
+        "tenant_id": "11111111-1111-4111-8111-111111111111",
+        "workspace": null,
+        "case_id": "case-defender",
+        "lookback_days": 1,
+        "connections": {"data_lake": "contoso-lake", "graph": "contoso-graph", "triage": null},
+        "report_dir": "reports/tenants/contoso/case-defender",
+        "created_at": "2024-03-01T12:00:03.000000+00:00",
+        "memory_file": null,
+        "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+        "window": {"start_utc": "2024-02-29T12:00:00Z", "end_utc": "2024-03-01T12:00:00Z"},
+        "hunt_id": null,
+        "capabilities": ["defender_hunting", "graph", "tenant_identity"]
+      },
+      "now": "2024-03-02T12:00:00Z",
+      "records": [
+        {"name": "tenant_identity_verified", "file": "20240301T121000000000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-defender", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:00Z", "expires_at": "2024-03-02T12:10:00Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "workspace_arm_without_workspace", "file": "20240301T121001000000Z-workspace_arm.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-defender", "capability": "workspace_arm", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:01Z", "expires_at": "2024-03-02T12:10:01Z", "detail": "ARM subscription tenant and workspace customerId matched the selected workspace", "via": null}},
+        {"name": "workspace_arm_naming_a_workspace", "file": "20240301T121001000001Z-workspace_arm.json", "valid": false, "from": "workspace_arm_without_workspace", "set": {"workspace_id": "44444444-4444-4444-8444-444444444444"}},
+        {"name": "graph_attested", "file": "20240301T122000000000Z-graph.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-defender", "capability": "graph", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:20:00Z", "expires_at": "2024-03-02T12:20:00Z", "detail": "Agent read the organization through the Graph connection", "via": null}},
+        {"name": "data_lake_without_workspace", "file": "20240301T122100000000Z-data_lake.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-defender", "capability": "data_lake", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:21:00Z", "expires_at": "2024-03-02T12:21:00Z", "detail": "Agent listed workspaces through the data lake connection", "via": null}},
+        {"name": "hunting_attested_via_graph", "file": "20240301T122200000000Z-defender_hunting.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-defender", "capability": "defender_hunting", "status": "attested", "method": "agent_attestation", "checked_at": "2024-03-01T12:22:00Z", "expires_at": "2024-03-02T12:22:00Z", "detail": "Agent ran a hunting query through the Graph connection", "via": "graph"}}
+      ],
+      "expect": {
+        "ignored": 1,
+        "blocked": [],
+        "effective": {
+          "tenant_identity": {"status": "verified", "required": true},
+          "workspace_arm": {"status": "unsupported", "required": false, "detail": "No workspace is bound to this case"},
+          "workspace_query": {"status": "unsupported", "required": false, "detail": "No workspace is bound to this case"},
+          "data_lake": {"status": "unsupported", "required": false, "detail": "No workspace is bound to this case"},
+          "graph": {"status": "attested", "required": true},
+          "triage": {"status": "unverified", "required": false, "detail": "No connection is declared for this tenant"},
+          "defender_hunting": {"status": "attested", "required": true, "via": "graph"}
+        }
+      }
+    },
+    {
+      "name": "sibling hunt child in the same tenant: records of another case or workspace never count",
+      "context": {
+        "schema_version": 2,
+        "profile": "contoso",
+        "tenant_id": "11111111-1111-4111-8111-111111111111",
+        "workspace": {"id": "55555555-5555-4555-8555-555555555555", "name": "contoso-secondary", "subscription_id": "77777777-7777-4777-8777-777777777777", "resource_group": "rg-contoso-two"},
+        "case_id": "hunt-one-02",
+        "lookback_days": 7,
+        "connections": {"data_lake": "contoso-lake", "graph": "contoso-graph", "triage": "contoso-triage"},
+        "report_dir": "reports/tenants/contoso/hunt-one-02",
+        "created_at": "2024-03-01T12:00:04.000000+00:00",
+        "memory_file": "contoso-context.md",
+        "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+        "window": {"start_utc": "2024-02-23T12:00:00Z", "end_utc": "2024-03-01T12:00:00Z"},
+        "hunt_id": "hunt-one",
+        "capabilities": ["tenant_identity", "workspace_arm"]
+      },
+      "now": "2024-03-02T12:00:00Z",
+      "records": [
+        {"name": "own_tenant_identity", "file": "20240301T121000000000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "hunt-one-02", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:00Z", "expires_at": "2024-03-02T12:10:00Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "sibling_case_tenant_identity", "file": "20240301T121000000001Z-tenant_identity.json", "valid": false, "from": "own_tenant_identity", "set": {"case_id": "hunt-one-01", "status": "denied"}},
+        {"name": "sibling_workspace_arm", "file": "20240301T121001000000Z-workspace_arm.json", "valid": false,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": "44444444-4444-4444-8444-444444444444", "case_id": "hunt-one-02", "capability": "workspace_arm", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:10:01Z", "expires_at": "2024-03-02T12:10:01Z", "detail": "ARM subscription tenant and workspace customerId matched the selected workspace", "via": null}}
+      ],
+      "expect": {
+        "ignored": 2,
+        "blocked": ["workspace_arm"],
+        "effective": {
+          "tenant_identity": {"status": "verified", "required": true},
+          "workspace_arm": {"status": "unverified", "required": true, "detail": "No check recorded"},
+          "workspace_query": {"status": "unverified", "required": false, "detail": "No check recorded"},
+          "data_lake": {"status": "unverified", "required": false, "detail": "No check recorded"},
+          "graph": {"status": "unverified", "required": false, "detail": "No check recorded"},
+          "triage": {"status": "unverified", "required": false, "detail": "No check recorded"},
+          "defender_hunting": {"status": "unverified", "required": false, "detail": "No check recorded"}
+        }
+      }
+    },
+    {
+      "name": "boundaries: clock skew limit and expiry instant",
+      "context": {
+        "schema_version": 2,
+        "profile": "contoso",
+        "tenant_id": "11111111-1111-4111-8111-111111111111",
+        "workspace": {"id": "44444444-4444-4444-8444-444444444444", "name": "contoso-primary", "subscription_id": "33333333-3333-4333-8333-333333333333", "resource_group": "rg-contoso"},
+        "case_id": "case-edge",
+        "lookback_days": 1,
+        "connections": {"data_lake": null, "graph": null, "triage": null},
+        "report_dir": "reports/tenants/contoso/case-edge",
+        "created_at": "2024-03-02T00:00:03.000000+00:00",
+        "memory_file": null,
+        "triage_home_tenant_id": null,
+        "window": {"start_utc": "2024-03-01T00:00:00Z", "end_utc": "2024-03-02T00:00:00Z"},
+        "hunt_id": null,
+        "capabilities": ["tenant_identity", "workspace_arm", "workspace_query"]
+      },
+      "now": "2024-03-02T12:00:00Z",
+      "records": [
+        {"name": "dated_exactly_at_the_skew_limit", "file": "20240302T120500000000Z-tenant_identity.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": null, "case_id": "case-edge", "capability": "tenant_identity", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-02T12:05:00Z", "expires_at": "2024-03-03T12:05:00Z", "detail": "Graph organization ID matched the selected tenant", "via": null}},
+        {"name": "dated_one_second_past_the_skew_limit", "file": "20240302T120501000000Z-tenant_identity.json", "valid": false, "from": "dated_exactly_at_the_skew_limit", "set": {"checked_at": "2024-03-02T12:05:01Z", "expires_at": "2024-03-03T12:05:01Z", "status": "denied"}},
+        {"name": "expires_at_the_current_instant", "file": "20240301T120000000000Z-workspace_arm.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": "44444444-4444-4444-8444-444444444444", "case_id": "case-edge", "capability": "workspace_arm", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:00:00Z", "expires_at": "2024-03-02T12:00:00Z", "detail": "ARM subscription tenant and workspace customerId matched the selected workspace", "via": null}},
+        {"name": "expires_one_second_from_now", "file": "20240301T120001000000Z-workspace_query.json", "valid": true,
+         "record": {"schema_version": 1, "kind": "capability_check", "profile": "contoso", "tenant_id": "11111111-1111-4111-8111-111111111111", "workspace_id": "44444444-4444-4444-8444-444444444444", "case_id": "case-edge", "capability": "workspace_query", "status": "verified", "method": "cli_probe", "checked_at": "2024-03-01T12:00:01Z", "expires_at": "2024-03-02T12:00:01Z", "detail": "Log Analytics query API answered the probe", "via": null}},
+        {"name": "year_9999_dates", "file": "99991231T235958000000Z-tenant_identity.json", "valid": false, "from": "dated_exactly_at_the_skew_limit", "set": {"checked_at": "9999-12-31T23:59:58Z", "expires_at": "9999-12-31T23:59:59Z"}},
+        {"name": "year_one_record", "file": "00010101T000000000000Z-workspace_query.json", "valid": true, "from": "expires_one_second_from_now", "set": {"checked_at": "0001-01-01T00:00:00Z", "expires_at": "0001-01-01T00:00:01Z"}}
+      ],
+      "expect": {
+        "ignored": 2,
+        "blocked": ["workspace_arm"],
+        "effective": {
+          "tenant_identity": {"status": "verified", "required": true},
+          "workspace_arm": {"status": "expired", "last_status": "verified", "required": true},
+          "workspace_query": {"status": "verified", "required": true},
+          "data_lake": {"status": "unverified", "required": false, "detail": "No connection is declared for this tenant"},
+          "graph": {"status": "unverified", "required": false, "detail": "No connection is declared for this tenant"},
+          "triage": {"status": "unverified", "required": false, "detail": "No connection is declared for this tenant"},
+          "defender_hunting": {"status": "unverified", "required": false, "detail": "No check recorded"}
+        }
+      }
+    }
+  ]
+}

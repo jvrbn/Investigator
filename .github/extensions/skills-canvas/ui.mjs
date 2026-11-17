@@ -51,6 +51,13 @@ export function renderPage(prefs = {}, scope = { registered: false, revision: ""
   .cross-hunt { border: 1px solid var(--border); padding: 10px; margin-bottom: 12px; border-radius: 8px; }
   .cross-hunt label { display: block; padding: 4px; }
   .cross-hunt textarea { width: 100%; min-height: 65px; background: var(--panel); color: var(--text); }
+  .cross-hunt textarea[readonly] { min-height: 110px; font-family: monospace; font-size: 11px; }
+  .cross-hunt input:not([type=checkbox]), .cross-hunt select { max-width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 4px; }
+  .cross-hunt fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; }
+  .cross-hunt fieldset label { display: inline-block; }
+  .cross-line { margin: 2px 0; font-size: 12px; overflow-wrap: anywhere; }
+  .cross-block { border-left: 3px solid var(--border); margin: 6px 0; padding: 2px 8px; }
+  .cross-block.bad { border-left-color: var(--warn); }
   .refresh {
     background: var(--chip); border: 1px solid var(--border); color: var(--muted);
     border-radius: 8px; padding: 6px 9px; cursor: pointer; font-size: 13px;
@@ -661,13 +668,24 @@ export function renderPage(prefs = {}, scope = { registered: false, revision: ""
       <details class="cross-hunt" id="crossHunt">
         <summary>Cross-tenant hunt (read-only)</summary>
         <p>Explicitly select targets; no authentication or query runs on selection.</p>
-        <p>This coordinator reuses the current chat. Profile selection does not isolate prior messages, model context or MCP authentication. Use separate chat/client sessions for strict customer transcript separation; aggregate only explicitly permitted coverage/status.</p>
+        <p>This coordinator reuses the current chat. Profile selection does not isolate prior messages, model context or MCP authentication. Use hand-off mode and a separate chat/client session per tenant for strict customer transcript separation; aggregate only explicitly permitted coverage/status.</p>
         <p>Secure case contexts require POSIX <code>O_NOFOLLOW</code>, <code>O_DIRECTORY</code> and directory-descriptor operations. Unsupported platforms/path-validation failures must be recorded as unavailable/error, never clean; no unsafe fallback.</p>
+        <p>A guest (B2B) sign-in or tenant header grants no roles and does not prove which tenant an MCP connection is signed in to. Every target gets the same pinned UTC window. Readiness shown here is advisory; run the command shown beside it for the authoritative answer.</p>
         <div id="crossTargets"></div>
         <label>Hunt / indicator<textarea id="crossRequest" placeholder="Indicator or hunt request"></textarea></label>
-        <label>Days <input id="crossLookback" type="number" min="1" max="365" value="7" /></label>
+        <label>Hunt ID <input id="crossHuntId" placeholder="Optional lowercase slug; generated when empty" /></label>
+        <label>Days <input id="crossLookback" type="number" min="1" max="3650" value="7" /></label>
+        <fieldset id="crossCaps"><legend>Capabilities this hunt requires (none checked = tenant identity and workspace ARM access only)</legend></fieldset>
+        <label>Run mode <select id="crossMode">
+          <option value="launch">Launch here (queued, one target at a time)</option>
+          <option value="handoff">Hand-off prompts (one separate chat per tenant)</option>
+        </select></label>
+        <button class="refresh" id="crossEvidence">Check earlier evidence</button>
         <button class="refresh" id="crossLaunch">Launch selected targets</button>
+        <div id="crossEvidenceOut"></div>
         <div id="crossStatus" role="status"></div>
+        <div id="crossRows" role="status"></div>
+        <div id="crossReadiness"></div>
       </details>
     </aside>
     <div class="rail-resize" id="railResize" title="Drag to resize"></div>
@@ -1251,13 +1269,14 @@ async function load() {
 }
 
 function initContextPicker() {
+  const DEFENDER_ONLY = "__defender_only__";
   const controls = document.getElementById("scopeControls");
   const banner = document.getElementById("scopeBanner");
   controls.hidden = !MC_SCOPE.registered;
   document.getElementById("crossHunt").hidden = !MC_SCOPE.registered;
   const c = MC_SCOPE.selected;
   banner.textContent = MC_SCOPE.error || (MC_SCOPE.registered
-    ? (c ? "PROFILE " + c.key + " | Tenant " + c.tenantId + " | Workspace " + (c.workspace ? c.workspace.id : "not selected") + " | Case " + c.caseId + " | Connections are references, authentication unverified."
+    ? (c ? "PROFILE " + c.key + " | Tenant " + c.tenantId + " | Workspace " + (c.workspace ? c.workspace.id : "none (Defender only)") + " | Case " + c.caseId + " | Connections are references, authentication unverified."
          : "Select an explicit tenant profile and workspace before launching. Legacy findings are not assigned to a customer.")
     : "Legacy single-tenant mode — shared legacy board. Configure profiles for isolated customer state.");
   if (MC_SCOPE.registered) banner.textContent += " | Shared chat/model context and tool authentication are NOT isolated by profile selection; use separate chat/client sessions for strict customer boundaries.";
@@ -1265,58 +1284,173 @@ function initContextPicker() {
   profile.add(new Option("Select profile…", ""));
   (MC_SCOPE.profiles || []).forEach(p => profile.add(new Option(p.key + " — " + p.tenantId, p.key)));
   if (c) profile.value = c.key;
+  // A workspace name is optional metadata; the ID is always shown.
+  function workspaceLabel(w) { return w.name ? w.name + " (" + w.id + ")" : w.id; }
   function workspaces() {
     const select = document.getElementById("workspaceSelect");
     select.replaceChildren(new Option("Select workspace…", ""));
     const p = (MC_SCOPE.profiles || []).find(p => p.key === profile.value);
-    (p ? p.workspaces : []).forEach(w => select.add(new Option(w.name + " — " + w.id, w.id)));
-    if (c && c.key === profile.value && c.workspace) select.value = c.workspace.id;
+    if (p) {
+      p.workspaces.forEach(w => select.add(new Option((w.name ? w.name + " — " : "") + w.id, w.id)));
+      select.add(new Option("Defender only (no Sentinel workspace)", DEFENDER_ONLY));
+    }
+    if (c && c.key === profile.value) select.value = c.workspace ? c.workspace.id : DEFENDER_ONLY;
   }
   profile.onchange = workspaces; workspaces();
   if (c) document.getElementById("caseSelect").value = c.caseId;
   document.getElementById("contextSelect").onclick = async function () {
+    const picked = document.getElementById("workspaceSelect").value;
+    const defenderOnly = picked === DEFENDER_ONLY;
     const res = await fetch("/api/context", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: profile.value, workspaceId: document.getElementById("workspaceSelect").value,
+      body: JSON.stringify({ profile: profile.value, workspaceId: defenderOnly ? "" : picked, defenderOnly: defenderOnly,
         caseId: document.getElementById("caseSelect").value.trim() }) });
     const j = await res.json();
     if (!res.ok || !j.ok) { toast(j.error || "Context selection failed"); return; }
     location.reload();
   };
+
   const host = document.getElementById("crossTargets");
-  (MC_SCOPE.profiles || []).forEach(p => p.workspaces.forEach(w => {
+  function addTarget(p, w) {
     const label = document.createElement("label");
     const box = document.createElement("input"); box.type = "checkbox";
-    box.dataset.profile = p.key; box.dataset.workspace = w.id;
-    label.append(box, document.createTextNode(p.key + " / " + w.name + " (" + w.id + ")")); host.append(label);
-  }));
-  let batchBindings = [];
-  async function statuses() {
-    if (!batchBindings.length) return;
-    const res = await fetch("/api/hunt-status", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bindings: batchBindings }) });
-    const j = await res.json(); if (!res.ok) return;
-    const target = document.getElementById("crossStatus"); target.replaceChildren();
-    (j.hunts || []).forEach(h => {
-      const row = document.createElement("p");
-      row.textContent = h.profile + " / " + h.workspaceId + ": " + h.status + (h.detail ? " — " + h.detail : "");
-      target.append(row);
+    box.dataset.profile = p.key; box.dataset.workspace = w ? w.id : ""; box.dataset.defenderOnly = w ? "" : "1";
+    label.append(box, document.createTextNode(p.key + " / " + (w ? workspaceLabel(w) : "Defender only (no Sentinel workspace)")));
+    host.append(label);
+  }
+  (MC_SCOPE.profiles || []).forEach(p => { p.workspaces.forEach(w => addTarget(p, w)); addTarget(p, null); });
+  const caps = document.getElementById("crossCaps");
+  // tenant_identity is always required by the context itself.
+  (MC_SCOPE.capabilities || []).filter(k => k.name !== "tenant_identity").forEach(k => {
+    const label = document.createElement("label");
+    const box = document.createElement("input"); box.type = "checkbox"; box.value = k.name;
+    label.append(box, document.createTextNode(k.name + " (" + k.proof + (k.scoped ? ", per workspace" : "") + ")"));
+    caps.append(label);
+  });
+  function selectedTargets() {
+    return [...host.querySelectorAll("input:checked")].map(b => b.dataset.defenderOnly === "1"
+      ? { profile: b.dataset.profile, defenderOnly: true }
+      : { profile: b.dataset.profile, workspaceId: b.dataset.workspace });
+  }
+  function line(parent, text) {
+    const row = document.createElement("div");
+    row.className = "cross-line"; row.textContent = text;
+    parent.append(row);
+  }
+  function block(parent, bad) {
+    const el = document.createElement("div");
+    el.className = "cross-block" + (bad ? " bad" : "");
+    parent.append(el);
+    return el;
+  }
+  function targetName(r) { return r.profile + " / " + (r.workspaceId ? r.workspaceId : "Defender only"); }
+  async function post(url, body) {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return { ok: res.ok, data: await res.json() };
+  }
+
+  // Launch summary: the shared window and, per target, what is required and what can never be provided.
+  function renderLaunch(j) {
+    const out = document.getElementById("crossStatus");
+    out.replaceChildren();
+    if (!j.results) { line(block(out, true), "ERROR — " + (j.error || "Hunt request failed")); return; }
+    line(out, "Hunt " + j.huntId + " (" + j.mode + ") — every target uses the window " + j.window.start_utc + " .. " + j.window.end_utc + " UTC");
+    j.results.forEach(r => {
+      const box = block(out, !r.ok);
+      line(box, targetName(r) + " [" + r.caseId + "]: " + String(r.status).toUpperCase() + (r.error ? " — " + r.error : ""));
+      line(box, "Required: " + (r.requiredCapabilities || []).join(", "));
+      (r.unsupportedCapabilities || []).forEach(u => line(box, "Unsupported: " + u.capability + " — " + u.reason));
+      if (r.prompt) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Hand-off prompt for " + targetName(r) + " (paste into a separate chat/client session for this tenant)";
+        const area = document.createElement("textarea"); area.readOnly = true; area.value = r.prompt;
+        const copy = document.createElement("button"); copy.className = "refresh"; copy.textContent = "Copy prompt";
+        copy.onclick = async function () {
+          try { await navigator.clipboard.writeText(r.prompt); toast("Prompt copied"); }
+          catch (e) { area.select(); toast("Select and copy the prompt"); }
+        };
+        details.append(summary, area, copy);
+        box.append(details);
+      }
     });
   }
+
+  // Tab-local launch handles only (correlation ids): they survive the reload a
+  // context switch causes, so progress stays visible; rows are re-fetched per binding.
+  let batchBindings = [];
+  try { batchBindings = JSON.parse(sessionStorage.getItem("mcHuntBindings") || "[]"); } catch (e) { batchBindings = []; }
+  if (!Array.isArray(batchBindings) || batchBindings.length > 10) batchBindings = [];
+  function remember(list) {
+    batchBindings = list;
+    try { sessionStorage.setItem("mcHuntBindings", JSON.stringify(list)); } catch (e) {}
+  }
+  function renderCaseReadiness(items) {
+    const out = document.getElementById("crossReadiness");
+    out.replaceChildren();
+    items.forEach(item => {
+      const b = item.binding || {};
+      const r = item.readiness;
+      const box = block(out, !r || !r.ok);
+      if (item.error) { line(box, targetName(b) + ": readiness unavailable — " + item.error); return; }
+      if (!r) { line(box, targetName(b) + ": no case context recorded yet"); return; }
+      line(box, targetName(b) + " [" + r.case_id + "] readiness (advisory): " + (r.ok ? "every required capability is usable" : "BLOCKED — " + r.blocked.join(", ")));
+      line(box, "Usable now: " + (r.usable.length ? r.usable.join(", ") : "none recorded yet"));
+      line(box, "Authoritative check: python scripts/tenant_context.py readiness reports/tenants/" + b.profile + "/" + b.caseId + "/context.json");
+    });
+  }
+  async function statuses() {
+    if (!batchBindings.length) return;
+    const rows = await post("/api/hunt-status", { bindings: batchBindings });
+    if (!rows.ok) return;
+    const target = document.getElementById("crossRows"); target.replaceChildren();
+    (rows.data.hunts || []).forEach(h => line(target, targetName(h) + " [" + h.caseId + "]" + (h.huntId ? " hunt " + h.huntId : "") + ": " + h.status + (h.detail ? " — " + h.detail : "")));
+    const ready = await post("/api/readiness", { bindings: batchBindings });
+    if (ready.ok) renderCaseReadiness(ready.data.readiness || []);
+  }
+  document.getElementById("crossEvidence").onclick = async function () {
+    const targets = selectedTargets();
+    if (!targets.length) { toast("Explicitly select profile/workspace targets"); return; }
+    const out = document.getElementById("crossEvidenceOut");
+    const r = await post("/api/readiness", { targets: targets });
+    out.replaceChildren();
+    if (!r.ok) { line(block(out, true), "ERROR — " + (r.data.error || "Evidence check failed")); return; }
+    (r.data.evidence || []).forEach(item => {
+      const box = block(out, !!item.error);
+      if (item.error) { line(box, targetName(item) + ": " + item.error); return; }
+      const e = item.evidence;
+      line(box, targetName(item) + ": earlier evidence (advisory, profile-wide, " + e.cases_scanned + " earlier case(s) scanned)");
+      line(box, "Previously usable: " + ((e.usable || []).length ? e.usable.join(", ") : "none recorded"));
+      Object.entries(e.capabilities || {}).forEach(([name, cap]) => {
+        if (cap.status === "unverified") return;
+        line(box, name + ": " + cap.status + (cap.checked_at ? " (" + cap.checked_at + (cap.case_id ? ", case " + cap.case_id : "") + ")" : "") + (cap.detail ? " — " + cap.detail : ""));
+      });
+      line(box, "Each new case must still prove its own access; earlier evidence never grants it.");
+    });
+  };
   document.getElementById("crossLaunch").onclick = async function () {
-    const targets = [...host.querySelectorAll("input:checked")].map(b => ({ profile: b.dataset.profile, workspaceId: b.dataset.workspace }));
+    const targets = selectedTargets();
     if (!targets.length) { toast("Explicitly select profile/workspace targets"); return; }
     const button = document.getElementById("crossLaunch"); button.disabled = true;
     try {
-      const res = await fetch("/api/cross-tenant-hunt", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targets: targets, request: document.getElementById("crossRequest").value,
-          lookbackDays: Number(document.getElementById("crossLookback").value),
-          caseId: document.getElementById("caseSelect").value.trim() }) });
-      const j = await res.json();
-      batchBindings = (j.results || []).filter(r => r.binding).map(r => r.binding);
-      document.getElementById("crossStatus").textContent = (j.results || []).filter(r => !r.ok).map(r => r.profile + ": ERROR — " + r.error).join("; ") || j.error || "Targets queued with frozen contexts.";
-      if (j.ok) await statuses();
+      const body = { targets: targets, request: document.getElementById("crossRequest").value,
+        lookbackDays: Number(document.getElementById("crossLookback").value),
+        mode: document.getElementById("crossMode").value,
+        capabilities: [...caps.querySelectorAll("input:checked")].map(b => b.value) };
+      const huntId = document.getElementById("crossHuntId").value.trim();
+      if (huntId) body.huntId = huntId;
+      const r = await post("/api/cross-tenant-hunt", body);
+      renderLaunch(r.data);
+      const launched = (r.data.results || []).filter(x => x.binding).map(x => x.binding);
+      if (launched.length) {
+        remember(launched);
+        document.getElementById("crossRows").replaceChildren();
+        await statuses();
+      }
+    } catch (e) {
+      toast("Hunt request failed: " + e.message);
     } finally { button.disabled = false; }
   };
+  void statuses().catch(() => {});
   setInterval(() => { void statuses().catch(() => {}); }, 4000);
 }
 initContextPicker();

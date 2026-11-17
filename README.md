@@ -69,16 +69,38 @@ read-only validation. **Tenant selection is not an authorization grant.**
 Azure CLI validation does not validate an MCP session; Sentinel Triage's
 home-tenant/delegation limitations still apply.
 
+**Partner and customer tenants (B2B guest access / Defender multitenant
+organization).** If your account is a B2B guest or member in other tenants,
+add one profile per tenant and follow the
+[B2B guest and Defender multitenant organization guide](docs/b2b-mto-multi-tenant.md).
+Each case freezes one tenant, one workspace (or Defender-only collection), one
+pinned UTC window, and a per-capability readiness record, so a hunt reports
+which tenant/workspace was usable, blocked, or unverified instead of silently
+skipping it. Defender multitenant management gives you portal-side views; it
+does not grant roles or anything this repository's CLI/MCP tooling can consume,
+and Sentinel Triage's guest limitations still apply. An attestation is a
+recorded claim, not proof.
+
+```sh
+python3 scripts/tenant_context.py profiles
+python3 scripts/tenant_context.py create --profile partner --workspace <workspace-guid> --case partner-001 --lookback-days 7
+python3 scripts/tenant_context.py verify reports/tenants/partner/partner-001/context.json
+python3 scripts/tenant_context.py readiness reports/tenants/partner/partner-001/context.json
+```
+
 Mission Control supports tenant-scoped investigation launches and findings.
 Keep each launch's original context when recording results; changing the
 dashboard selection must not change an in-flight investigation's destination.
 Cross-tenant collection is explicitly scoped and read-only, with separate
-coverage and failure reporting for every selected tenant/workspace.
+coverage and failure reporting for every selected tenant/workspace. Its
+**Cross-tenant hunt** panel previews per-target readiness, then either queues
+one case per target (identical pinned window) or produces a hand-off for
+strict transcript separation.
 
 | Workflow | Example prompt | Scope |
 |----------|----------------|-------|
 | [Local agent investigation](.github/skills/local-agent-investigation/SKILL.md) | "Investigate local agent actions on this device" | Discovery, observed actions, supported content imports, and UTC evidence timeline |
-| [Cross-tenant hunt](.github/skills/cross-tenant-hunt/SKILL.md) | "Hunt this indicator across the selected tenants" | Explicit tenant/workspace selection and separate collection results |
+| [Cross-tenant hunt](.github/skills/cross-tenant-hunt/SKILL.md) | "Hunt this indicator across the selected tenants" | Explicit tenant/workspace selection, one pinned UTC window, per-capability readiness, and separate collection results per tenant (B2B guest / Defender multitenant organization targets supported) |
 | [Business email compromise](.github/skills/bec-investigation/SKILL.md) | "Investigate BEC for user@contoso.com" | Delivery/clicks, authentication, mailbox rules/access, outbound mail, and response state |
 | [Ransomware investigation](.github/skills/ransomware-investigation/SKILL.md) | "Investigate ransomware incident 12345" | Process attribution, file impact, lateral movement, and observed control outcomes |
 | [Telemetry health](.github/skills/telemetry-health/SKILL.md) | "Check investigation readiness for the selected workspace" | Rule failures, ingestion change, required-source freshness, and sensor coverage |
@@ -107,8 +129,12 @@ python3 .github/manifests/build_manifest.py --validate-only
 ```
 
 The orchestration tests mock the SDK boundary; these checks do not prove live
-tenant access. Set `MC_TEST_PYTHON` to your supported Python executable when it
-is not available at `/bin/python3`.
+tenant access. The Python suite covers the context contract, capability
+ledger/readiness, hunt windows, tenant-local mappings, and the tenant-bound
+legacy writers (`enrich_ips.py`, `scripts/generate_report_from_json.py`);
+tests that need `requests`/`dotenv` use offline stubs from
+`tests/fixtures/offline_stubs/`. Set `MC_TEST_PYTHON` to your supported Python
+executable when it is not available at `/bin/python3`.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -576,7 +602,7 @@ Then:
 2. Run `az login --tenant <tenant_id>` for `azure-mcp-server` (uses `AzureCliCredential`).
 3. Restart the app / CLI and sign in once interactively so OAuth tokens cache for scheduled runs.
 
-**Multi-tenant (optional):** If your account has access to multiple tenants (e.g., guest/B2B or CSP), pin the Sentinel and Graph servers to a specific tenant by adding a header to `sentinel-data-mcp`, `sentinel-triage-mcp`, and `Graph-mcp-server`:
+**Multi-tenant (optional):** If your account has access to multiple tenants (e.g., guest/B2B, Defender multitenant organization, or CSP), pin the Sentinel and Graph servers to a specific tenant by adding a header to `sentinel-data-mcp`, `sentinel-triage-mcp`, and `Graph-mcp-server`:
 
 ```json
 "headers": {
@@ -584,7 +610,7 @@ Then:
 }
 ```
 
-Without it, sign-in uses your account's home tenant.
+Without it, sign-in uses your account's home tenant. One MCP server entry is one tenant connection, so register a separately named entry per tenant (for example `sentinel-data-partner`) rather than switching a shared one. After you add a tenant profile, `python3 scripts/tenant_context.py render-mcp --profile <profile>` prints ready-made entries for that tenant; it only prints them (merge them into your MCP configuration yourself and sign in with the guest/member account). The header selects the tenant and grants no roles; Sentinel Triage's documented guest/delegated-access limitation still applies (the guide shows how to record and report it). See [B2B guest and Defender multitenant organization setup](docs/b2b-mto-multi-tenant.md).
 
 **Optional MCP Apps** (geomap, heatmap, incident-comment) need absolute paths in user scope. After [building them](#4-build-mcp-apps-optional--visualization-skills), add entries like the following to `mcpServers`:
 

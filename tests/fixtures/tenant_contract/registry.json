@@ -1,0 +1,146 @@
+{
+  "_comment": "Shared by tests/test_tenant_context.py and .github/extensions/skills-canvas/tenant-context.test.mjs. Synthetic values only. Python and JavaScript must normalize `valid.config` to `valid.expected` and must both reject every entry of `invalid`.",
+  "valid": {
+    "config": {
+      "tenants": {
+        "contoso": {
+          "tenant_id": "11111111-1111-4111-8111-111111111111",
+          "subscription_id": "33333333-3333-4333-8333-333333333333",
+          "sentinel_workspace_id": "44444444-4444-4444-8444-444444444444",
+          "azure_mcp": {
+            "tenant": "11111111-1111-4111-8111-111111111111",
+            "subscription": "33333333-3333-4333-8333-333333333333",
+            "resource_group": "rg-contoso",
+            "workspace_name": "contoso-primary"
+          },
+          "workspaces": [
+            {"id": "55555555-5555-4555-8555-555555555555", "name": "contoso-secondary", "subscription_id": "77777777-7777-4777-8777-777777777777", "resource_group": "rg-contoso-two"},
+            {"id": "88888888-8888-4888-8888-888888888888"}
+          ],
+          "memory_file": "contoso-context.md",
+          "connections": {"data_lake": "contoso-lake", "graph": "contoso-graph", "triage": "contoso-triage"},
+          "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+          "sit_mapping": {
+            "__comment": "synthetic",
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA": "Synthetic SIT A",
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": "Synthetic SIT B"
+          },
+          "label_mapping": {"cccccccc-cccc-4ccc-8ccc-cccccccccccc": "Synthetic Label"},
+          "sit_priority": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "high", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": "Low"}
+        },
+        "fabrikam": {
+          "tenant_id": "22222222-2222-4222-8222-222222222222",
+          "sentinel_workspace_id": "66666666-6666-4666-8666-666666666666",
+          "azure_mcp": {"resource_group": "rg-fabrikam", "workspace_name": "fabrikam-primary"},
+          "connections": {"graph": "fabrikam-graph"},
+          "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111"
+        },
+        "adatum": {
+          "tenant_id": "99999999-9999-4999-8999-999999999999",
+          "subscription_id": "33333333-3333-4333-8333-333333333333",
+          "sentinel_workspace_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          "azure_mcp": {"resource_group": "rg-adatum", "workspace_name": "adatum-primary"},
+          "workspaces": [{"id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"}]
+        }
+      }
+    },
+    "expected": {
+      "contoso": {
+        "tenant_id": "11111111-1111-4111-8111-111111111111",
+        "subscription_id": "33333333-3333-4333-8333-333333333333",
+        "sentinel_workspace_id": "44444444-4444-4444-8444-444444444444",
+        "workspaces": [
+          {"id": "55555555-5555-4555-8555-555555555555", "name": "contoso-secondary", "subscription_id": "77777777-7777-4777-8777-777777777777", "resource_group": "rg-contoso-two"},
+          {"id": "88888888-8888-4888-8888-888888888888", "name": null, "subscription_id": null, "resource_group": null},
+          {"id": "44444444-4444-4444-8444-444444444444", "name": "contoso-primary", "subscription_id": "33333333-3333-4333-8333-333333333333", "resource_group": "rg-contoso"}
+        ],
+        "connections": {"data_lake": "contoso-lake", "graph": "contoso-graph", "triage": "contoso-triage"},
+        "memory_file": "contoso-context.md",
+        "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+        "sit_mapping": {
+          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "Synthetic SIT A",
+          "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": "Synthetic SIT B"
+        },
+        "label_mapping": {"cccccccc-cccc-4ccc-8ccc-cccccccccccc": "Synthetic Label"},
+        "sit_priority": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "High", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": "Low"}
+      },
+      "fabrikam": {
+        "tenant_id": "22222222-2222-4222-8222-222222222222",
+        "subscription_id": null,
+        "sentinel_workspace_id": "66666666-6666-4666-8666-666666666666",
+        "workspaces": [
+          {"id": "66666666-6666-4666-8666-666666666666", "name": "fabrikam-primary", "subscription_id": null, "resource_group": "rg-fabrikam"}
+        ],
+        "connections": {"data_lake": null, "graph": "fabrikam-graph", "triage": null},
+        "memory_file": null,
+        "triage_home_tenant_id": "11111111-1111-4111-8111-111111111111",
+        "sit_mapping": {},
+        "label_mapping": {},
+        "sit_priority": {}
+      },
+      "adatum": {
+        "tenant_id": "99999999-9999-4999-8999-999999999999",
+        "subscription_id": "33333333-3333-4333-8333-333333333333",
+        "sentinel_workspace_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "workspaces": [
+          {"id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "adatum-primary", "subscription_id": "33333333-3333-4333-8333-333333333333", "resource_group": "rg-adatum"}
+        ],
+        "connections": {"data_lake": null, "graph": null, "triage": null},
+        "memory_file": null,
+        "triage_home_tenant_id": null,
+        "sit_mapping": {},
+        "label_mapping": {},
+        "sit_priority": {}
+      }
+    }
+  },
+  "legacy": [
+    {"name": "empty config", "config": {}},
+    {"name": "root-level tenant", "config": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sentinel_workspace_id": "44444444-4444-4444-8444-444444444444"}},
+    {"name": "empty registry", "config": {"tenants": {}}}
+  ],
+  "invalid": [
+    {"name": "unknown credential-like field", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "client_secret": "not-a-real-secret"}}}},
+    {"name": "connection is a URL", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "connections": {"graph": "https://credentials.example"}}}}},
+    {"name": "unknown connection kind", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "connections": {"sentinel": "x"}}}}},
+    {"name": "connection is not text", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "connections": {"graph": 5}}}}},
+    {"name": "connections is not an object", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "connections": []}}}},
+    {"name": "azure_mcp tenant conflict", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "azure_mcp": {"tenant": "22222222-2222-4222-8222-222222222222"}}}}},
+    {"name": "azure_mcp subscription conflict", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "subscription_id": "33333333-3333-4333-8333-333333333333", "azure_mcp": {"subscription": "77777777-7777-4777-8777-777777777777"}}}}},
+    {"name": "azure_mcp unknown field", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "azure_mcp": {"token": "x"}}}}},
+    {"name": "azure_mcp is not an object", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "azure_mcp": []}}}},
+    {"name": "workspace unknown field", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "55555555-5555-4555-8555-555555555555", "key": "x"}]}}}},
+    {"name": "duplicate workspace IDs", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "55555555-5555-4555-8555-555555555555"}, {"id": "55555555-5555-4555-8555-555555555555"}]}}}},
+    {"name": "duplicate workspace IDs differing by case", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, {"id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"}]}}}},
+    {"name": "workspace ID is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "nope"}]}}}},
+    {"name": "workspace is not an object", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": ["x"]}}}},
+    {"name": "workspaces is not an array", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": {}}}}},
+    {"name": "workspace name is a path", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "55555555-5555-4555-8555-555555555555", "name": "a/b"}]}}}},
+    {"name": "workspace name has a control character", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "55555555-5555-4555-8555-555555555555", "name": "a\nb"}]}}}},
+    {"name": "workspace name is empty", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "workspaces": [{"id": "55555555-5555-4555-8555-555555555555", "name": ""}]}}}},
+    {"name": "nil tenant GUID", "config": {"tenants": {"contoso": {"tenant_id": "00000000-0000-0000-0000-000000000000"}}}},
+    {"name": "tenant is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "not-a-guid"}}}},
+    {"name": "tenant is missing", "config": {"tenants": {"contoso": {}}}},
+    {"name": "subscription is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "subscription_id": "nope"}}}},
+    {"name": "default workspace is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sentinel_workspace_id": "nope"}}}},
+    {"name": "triage home is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "triage_home_tenant_id": "nope"}}}},
+    {"name": "default workspace name conflicts with azure_mcp", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sentinel_workspace_id": "44444444-4444-4444-8444-444444444444", "workspaces": [{"id": "44444444-4444-4444-8444-444444444444", "name": "a"}], "azure_mcp": {"workspace_name": "b"}}}}},
+    {"name": "default workspace resource group conflicts with azure_mcp", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sentinel_workspace_id": "44444444-4444-4444-8444-444444444444", "workspaces": [{"id": "44444444-4444-4444-8444-444444444444", "resource_group": "rg-a"}], "azure_mcp": {"resource_group": "rg-b"}}}}},
+    {"name": "default workspace subscription conflicts with profile", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "subscription_id": "33333333-3333-4333-8333-333333333333", "sentinel_workspace_id": "44444444-4444-4444-8444-444444444444", "workspaces": [{"id": "44444444-4444-4444-8444-444444444444", "subscription_id": "77777777-7777-4777-8777-777777777777"}]}}}},
+    {"name": "SIT mapping key is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_mapping": {"not-a-guid": "x"}}}}},
+    {"name": "SIT mapping value is not text", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_mapping": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": 5}}}}},
+    {"name": "SIT mapping value has a control character", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_mapping": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "a\nb"}}}}},
+    {"name": "SIT mapping GUIDs differ only by case", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_mapping": {"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA": "x", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "y"}}}}},
+    {"name": "SIT mapping is not an object", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_mapping": []}}}},
+    {"name": "label mapping key is not a GUID", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "label_mapping": {"not-a-guid": "x"}}}}},
+    {"name": "SIT priority is not a tier", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_priority": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "Critical"}}}}},
+    {"name": "SIT priority is not text", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "sit_priority": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": 5}}}}},
+    {"name": "memory file is a path", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "memory_file": "../escape.md"}}}},
+    {"name": "memory file is empty", "config": {"tenants": {"contoso": {"tenant_id": "11111111-1111-4111-8111-111111111111", "memory_file": ""}}}},
+    {"name": "tenants is null", "config": {"tenants": null}},
+    {"name": "tenants is an array", "config": {"tenants": []}},
+    {"name": "tenants is text", "config": {"tenants": "bad"}},
+    {"name": "profile is null", "config": {"tenants": {"contoso": null}}},
+    {"name": "profile name is not a slug", "config": {"tenants": {"Contoso Corp": {"tenant_id": "11111111-1111-4111-8111-111111111111"}}}}
+  ]
+}

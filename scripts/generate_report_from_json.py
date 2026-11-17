@@ -2,21 +2,29 @@
 Generate COMPACT investigation report from JSON data file.
 
 Usage:
-    python generate_compact_report.py <json_file_path> [--force-enrich]
+    python generate_compact_report.py <json_file_path> [--force-enrich] [--context <context.json>]
 
 Example:
     python generate_compact_report.py temp/investigation_user_20251126_150214.json
     python generate_compact_report.py temp/investigation_user_20251126_150214.json --force-enrich
+    python generate_compact_report.py temp/investigation_user_20251126_150214.json --context reports/tenants/<profile>/<case>/context.json
 
 Options:
     --force-enrich    Force fresh IP enrichment even if cached data exists
+    --context         Tenant case context. Required when a tenant registry is configured in
+                      config.json; the report and the enriched copy of the data are then written
+                      only inside that case directory and the input file is never modified.
+    --repo-root       Repository that owns the context (defaults to this script's repository)
 """
 
+import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from investigator import InvestigationResult, AnomalyFinding, IPIntelligence, UserProfile, MFAStatus, DeviceInfo, RiskDetection, RiskySignIn, UserRiskProfile, DLPEvent
 from report_generator import CompactReportGenerator
+from tenant_context import ContextError, check_evidence_tenant, require_case_context, write_case_file
 from datetime import datetime, timedelta
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -184,15 +192,32 @@ def enrich_ip(ip: str, config: dict = None) -> IPIntelligence:
             risk_level="Unknown", assessment=f"Enrichment failed: {str(e)}"
         )
 
-def main():
-    if len(sys.argv) < 2:
-        print("❌ Error: Missing JSON file path")
-        print("\nUsage: python generate_compact_report.py <json_file_path> [--force-enrich]")
-        print("Example: python generate_compact_report.py temp/investigation_user_20251126_150214.json")
-        sys.exit(1)
-    
-    json_file = Path(sys.argv[1])
-    force_enrich = '--force-enrich' in sys.argv
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Generate a COMPACT investigation report from an investigation JSON data file")
+    parser.add_argument("json_file", type=Path, help="Investigation JSON, e.g. temp/investigation_user_<ts>.json")
+    parser.add_argument("--force-enrich", action="store_true",
+                        help="Force fresh IP enrichment even if cached data exists")
+    parser.add_argument("--context", type=Path,
+                        help="Tenant case context.json (required when a tenant registry is configured)")
+    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1],
+                        help="Repository that owns the context (defaults to this script's repository)")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    json_file = args.json_file
+    force_enrich = args.force_enrich
+
+    # With a tenant registry the shared temp/ and reports/user-investigations/ locations are
+    # never used: everything is written inside the selected tenant's case directory.
+    try:
+        case = require_case_context(args.context, repo_root=args.repo_root)
+    except ContextError as error:
+        print(f"❌ Error: {error}")
+        sys.exit(2)
+    run_stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
     if not json_file.exists():
         print(f"❌ Error: File not found: {json_file}")
@@ -202,6 +227,14 @@ def main():
     print(f"📂 Loading investigation data from {json_file.name}...")
     with open(json_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
+
+    if case is not None:
+        try:
+            check_evidence_tenant(data, case)
+        except ContextError as error:
+            print(f"❌ Error: {error}")
+            sys.exit(2)
+        print(f"🔒 Bound to tenant case {case.profile}/{case.case_id}; outputs stay in {case.report_dir}/")
     
     # Check for cached IP enrichment data
     has_cached_enrichment = 'ip_enrichment' in data and 'enrichment_metadata' in data
@@ -724,7 +757,7 @@ def main():
             result.ip_intelligence.sort(key=lambda x: ip_order.get(x.ip, 999))
         
         # Save enrichment data back to JSON
-        print(f"\n💾 Saving IP enrichment data to {json_file.name}...")
+        print(f"\n💾 Saving IP enrichment data to {json_file.name if case is None else 'the tenant case directory'}...")
         enrichment_data = []
         for ip_intel in result.ip_intelligence:
             enrichment_data.append({
@@ -765,8 +798,17 @@ def main():
             'ip_count': len(enrichment_data)
         }
         
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        if case is None:
+            with open(json_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        else:
+            # The supplied file is never rewritten: the enriched copy is new evidence inside the case.
+            data['tenant_id'] = case.tenant_id
+            data['case_id'] = case.case_id
+            enriched_path = write_case_file(
+                args.repo_root, case, f"investigation_enriched_{run_stamp}.json",
+                json.dumps(data, indent=2, ensure_ascii=False))
+            print(f"  Enriched copy: {enriched_path}")
         print(f"  ✓ Saved {len(enrichment_data)} enriched IPs to JSON")
     
     # 🎯 DYNAMIC RISK ASSESSMENT (based on actual data)
@@ -1135,10 +1177,20 @@ SecurityIncident
     # Generate COMPACT HTML report
     print(f"\n📄 Generating COMPACT HTML report...")
     generator = CompactReportGenerator()
-    report_path = generator.generate(result)
+    if case is None:
+        report_path = generator.generate(result)
+    else:
+        username = re.sub(r"[^A-Za-z0-9_.-]", "_", result.upn.split('@')[0])[:64] or "user"
+        report_path = write_case_file(
+            args.repo_root, case, f"Investigation_Report_Compact_{username}_{run_stamp}.html",
+            generator.render(result))
     print(f"\n✅ Investigation complete!")
     print(f"📊 Compact Report: {report_path}")
     
+    if case is not None:
+        print(f"\n🗑️ Shared legacy cleanup skipped for tenant-bound runs")
+        return
+
     # 🗑️ CLEANUP: Remove old investigation JSON and HTML files (3-day retention for lab data)
     print(f"\n🗑️ Running cleanup of old investigation files...")
     try:
@@ -1148,4 +1200,8 @@ SecurityIncident
         print(f"⚠️  Cleanup skipped: {e}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ContextError as error:
+        print(f"❌ Error: {error}")
+        sys.exit(2)

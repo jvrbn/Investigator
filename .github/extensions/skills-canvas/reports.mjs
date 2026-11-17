@@ -51,7 +51,7 @@ export async function reportMatchesTenant(repoRoot, rel, tenantKey, tenantId) {
         const manifest = path.join(caseDir, "context.json");
         if (await realpath(manifest) !== manifest) return false;
         const c = JSON.parse(await readFile(manifest, "utf8"));
-        return c.schema_version === 1 && c.profile === tenantKey && c.tenant_id === tenantId &&
+        return (c.schema_version === 1 || c.schema_version === 2) && c.profile === tenantKey && c.tenant_id === tenantId &&
             c.case_id === parts[3] && c.report_dir === parts.slice(0, 4).join("/");
     } catch { return false; }
 }
