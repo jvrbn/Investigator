@@ -73,7 +73,9 @@ This skill detects **scope drift** — the gradual, often imperceptible expansio
 6. **ALWAYS apply the low-volume denominator floor** to prevent false-positive drift scores on sparse baselines
 7. **ALWAYS correlate across all required data sources** (DeviceProcessEvents, SecurityAlert, DeviceInfo)
 8. **ALWAYS run independent queries in parallel** for performance
-9. **NEVER report a drift flag without corroborating evidence** from at least one secondary data source
+9. **ALWAYS retain measured behavioral deviations, including legitimate ones** — corroboration determines threat confidence, not whether a deviation is reported
+
+**Required companion:** Read and follow the [deviation-reporting contract](../deviation-reporting.md) before tiering, applying benign explanations, or generating a report.
 
 ### Data Sources
 
@@ -186,7 +188,7 @@ After Query 15, count distinct devices in the result set:
 | **≤ 50 devices** | Small | All flagged | Full deep dive for every device > 150%. No limiting needed. |
 | **51–200 devices** | Medium | Top 10 | Full deep dive for top 10 by DriftScore. Summary row for remaining flagged devices. |
 | **201–1000 devices** | Large | Top 10 | Full deep dive for top 10. Tier 2 summary (next 20) with first-seen processes only. Remaining flagged devices listed in ranking table with scores but no deep dive. |
-| **> 1000 devices** | Very Large | Top 10 | Same as Large, plus: filter Query 15 to `BL_TotalEvents > 10` to exclude near-silent devices from scoring. |
+| **> 1000 devices** | Very Large | Top 10 | Same as Large; exclude `BL_TotalEvents <= 10` from ratio ranking only, retaining observed material changes and coverage limitations. |
 
 ### Tiered Depth Model
 
@@ -197,7 +199,9 @@ After computing drift scores and ranking all devices, assign tiers:
 | **Tier 1** (Full) | Top N by DriftScore (N = deep dive limit from table above) | All: Q16, Q17, Q18, Q19, Q20, Q21, Q22 | Full deep dive: ASCII chart, dimension table, first-seen processes, process chains, command-line patterns, alerts, DeviceInfo uptime |
 | **Tier 2** (Summary) | Next 20 flagged devices (or remaining if < 20) | Q16 only (first-seen processes) | One-line summary per device: score, top 3 new processes, flag status |
 | **Tier 3** (Score only) | All remaining flagged devices | None beyond Phase 1 | Row in ranking table: device name, drift score, dimension ratios, flag emoji |
-| **Stable** | Devices ≤ 150% | None beyond Phase 1 | Omitted from deep dives. Included in fleet summary statistics only. |
+| **Below threshold** | Devices ≤ 150% | None beyond Phase 1 | No automatic deep dive; observed material changes remain in the deviation register. |
+
+**Tiering limits depth, not visibility:** Preserve observed material deviations from every tier, including entities excluded from ratio ranking. A missing deep dive is not evidence of legitimacy.
 
 ### KQL Scoping for Large Fleets
 
@@ -227,7 +231,7 @@ When tiered depth is applied, **always disclose** in the report header:
 **Deep Dives:** Top <X> by DriftScore (Tier 1: full analysis)
 **Summaries:** <Y> additional flagged devices (Tier 2: first-seen processes only)
 **Score Only:** <Z> additional flagged devices (Tier 3: ranking table only)
-**Stable:** <W> devices ≤ 150% (omitted from deep dives)
+**Below Threshold:** <W> devices ≤ 150% (material deviations still reported)
 ```
 
 ---
@@ -254,11 +258,11 @@ $$
 
 | Score | Meaning | Action |
 |-------|---------|--------|
-| **< 80** | Contracting scope | ✅ Normal — entity is doing less than usual |
-| **80–120** | Stable / normal variance | ✅ No action required |
-| **120–150** | Moderate deviation | 🟡 Monitor — check for legitimate reasons |
-| **> 150** | Significant drift | 🔴 FLAG — investigate with corroborating evidence |
-| **> 250** | Extreme drift | 🔴 CRITICAL — immediate investigation required |
+| **< 80** | Aggregate contraction | Check coverage and dimension changes; not automatically normal |
+| **80–120** | Aggregate stability | Check material changes hidden by the composite score |
+| **120–150** | Moderate deviation | 🟡 Report and assess, even if legitimate |
+| **> 150** | Significant drift | 🔴 Flag behavioral drift; assess threat risk separately |
+| **> 250** | Extreme drift | 🔴 Prioritize review; score alone does not establish a threat |
 
 ### Low-Volume Denominator Floor
 
@@ -285,7 +289,7 @@ This is the primary query that computes per-device behavioral profiles and drift
 | `DeviceProcessEvents` | Query 14 | Fleet-wide daily summary |
 | `DeviceProcessEvents` | Query 15 | Per-device daily breakdown with drift score computation |
 
-**Fleet-wide produces ONE drift score per device.** Devices are ranked by DriftScore; those exceeding 150% are assigned to tiers based on fleet size (see [Fleet Scaling](#fleet-scaling-large-environments)). Tier 1 devices get full deep dives; Tier 2 get summary analysis; Tier 3 appear in the ranking table only.
+**Fleet-wide produces ONE drift score per device.** Devices are ranked by DriftScore; those exceeding 150% are assigned to tiers based on fleet size (see [Fleet Scaling](#fleet-scaling-large-environments)). Tier 1 devices get full deep dives; Tier 2 get summary analysis; Tier 3 get ranking rows. All observed material changes remain in the required deviation register, regardless of tier or composite score.
 
 ### Phase 2: Process Drift Pattern Analysis
 
@@ -308,14 +312,15 @@ This is the primary query that computes per-device behavioral profiles and drift
 ### Phase 5: Score Computation & Report Generation
 
 1. Compute DriftScore per device using the 5-dimension formula
-2. Apply the low-volume denominator floor
+2. Apply the low-volume denominator floor, retaining raw and adjusted scores
 3. Flag any device exceeding 150% threshold
 4. Handle special cases:
    - **Newly onboarded devices** (no baseline = DriftScore 999) should be flagged as "New Device" rather than drift
    - **Data Lake ingestion boundaries** may cause zero recent-window activity — verify before reporting contraction
 5. For devices with elevated Volume ratio (>200%) or near-threshold DriftScore (>130%): Run Queries 21+22 (DeviceInfo uptime + per-session volume) to determine if the volume spike is explained by intermittent power-on usage. If the device was only online for a small fraction of the baseline window, note as **mitigating factor**.
-6. Generate risk assessment with emoji-coded findings
-7. Render output in the user's selected mode
+6. Populate the required deviation register from all observed material changes, including legitimate, below-threshold, and uncorroborated changes
+7. Generate risk assessment separately from behavioral deviation, with emoji-coded findings
+8. Render output in the user's selected mode
 
 ---
 
@@ -406,14 +411,16 @@ DeviceProcessEvents
 ```
 
 **Interpretation:**
-- New processes from recognized vendors (Microsoft, Google, etc.) → likely software updates or deployments
-- **Version-stamped update binaries** (`AM_Delta_Patch_*.exe`, `MicrosoftEdge_X64_*.exe`, `odt*.tmp.exe`) → expected noise, always appear as "new" (see pitfall: Version-Stamped Process Name False Positives)
+- Recognized company-name metadata suggests a deployment explanation but does not verify a signature or authorization; validate path, parent, command, and baseline/deployment evidence
+- **Version-stamped update binaries** (`AM_Delta_Patch_*.exe`, `MicrosoftEdge_X64_*.exe`, `odt*.tmp.exe`) → group verified routine updates, retaining material execution-context changes (see pitfall: Version-Stamped Process Name False Positives)
 - New unsigned processes or processes from unknown companies → investigate immediately
 - Large number of new processes on a single device → may indicate software deployment, but also possible malware dropper
 
 **Single-Device Mode:** Add `| where DeviceName =~ '<DEVICE_NAME>'` to both the baseline and recent subqueries. Then expand to show full process details including `ProcessCommandLine` and `FolderPath`.
 
 **Fleet-Wide vs. Per-Device First-Seen Behavior:** This query identifies processes that are globally novel — not seen on *any* device during the baseline. If a process ran on DeviceA during baseline but appears on DeviceB for the first time in the recent window, it will NOT be flagged because the baseline `distinct FileName` covers all devices. This design choice reduces noise (known-good processes aren't re-flagged per device) but may miss per-device novelty. For per-device first-seen analysis, scope the baseline `distinct` by `DeviceName` — note this is significantly more expensive on large fleets.
+
+Fleet familiarity is not proof of legitimacy on a particular device. Disclose the per-device coverage gap when that comparison was not performed.
 
 ### Query 17: Rare Process Chains (Parent→Child Relationships)
 
@@ -443,7 +450,7 @@ DeviceProcessEvents
 
 **Interpretation:**
 - Common chains like `explorer.exe→notepad.exe` appearing as "new" → baseline window too short or intermittent usage
-- **Update chains** like `wuauclt.exe→AM_Delta_Patch_*.exe` or `microsoftedgeupdate.exe→MicrosoftEdge_X64_*.exe` → expected noise from automatic updates, always appear as "new" due to version-stamped child process names
+- **Update chains** like `wuauclt.exe→AM_Delta_Patch_*.exe` or `microsoftedgeupdate.exe→MicrosoftEdge_X64_*.exe` → validate the update explanation and retain material parent/path/account changes, even when the child is a familiar update binary
 - Suspicious chains like `cmd.exe→powershell.exe→certutil.exe` → investigate for LOLBin abuse
 - Chains appearing on a single device vs. fleet-wide → single device may indicate targeted activity
 
@@ -476,8 +483,8 @@ SecurityIncident
 | Incident Status | Classification | Impact on Drift Assessment |
 |-----------------|----------------|----------------------------|
 | Closed | TruePositive | 🔴 Confirmed threat — significantly increases drift risk |
-| Closed | FalsePositive | 🟢 False alarm — discount from drift risk, note as noise |
-| Closed | BenignPositive | 🟡 Expected behavior — note but don't escalate |
+| Closed | FalsePositive | 🟢 Discount that detection's threat weight; retain independently observed deviations |
+| Closed | BenignPositive | 🟡 Retain the explained deviation and its evidence; reassess changed scope |
 | Active/New | Any | 🟠 Unresolved — flag for attention, may indicate ongoing threat |
 
 **Product Name Mapping (Legacy → Current Branding):**
@@ -569,8 +576,8 @@ DeviceProcessEvents
 ```
 
 **Interpretation:**
-- Commands executed by expected service accounts (e.g., MDI sensor running `ipconfig /flushdns`) → benign
-- Linux health checks (`curl` to MCR, `wget` for MOTD) executed by root → expected operational noise
+- Expected service accounts do not make a new command benign; compare the command, parent, path, target, and cadence with verified baseline or deployment evidence
+- Linux health checks (`curl` to MCR, `wget` for MOTD) may be operational; retain material changes even after validating that explanation
 - Reconnaissance commands from user accounts or unexpected contexts → investigate
 - Multiple categories of suspicious commands on the same device → high confidence indicator of compromise
 
@@ -611,9 +618,9 @@ Heartbeat
 ```
 
 **Interpretation:**
-- **Gaps between days = device was powered off (or MDE sensor was inactive).** Count the rows to determine total days online vs. the full analysis window.
+- **Gaps between days mean missing device observations, not proof of power-off.** Count observed days and verify downtime independently before using it as a legitimate explanation.
 - **SensorHealthState** values: `Active` (sensor reporting normally), `Inactive` (sensor not communicating), `Misconfigured` (partial telemetry). Use to assess data quality.
-- **Intermittent devices** (online <30% of baseline window) will produce artificially diluted baseline daily averages. A single power-on session will appear as a large volume spike. This is a **mathematical artifact**, not genuine drift.
+- **Verified intermittent usage** can dilute calendar-day averages. Accept a statistical-artifact explanation only when uptime evidence and comparable observed-session behavior support it; retain raw/adjusted measurements and any independent process/account/chain changes.
 - **Consistent daily presence** confirms the baseline daily average is representative — volume spikes are more meaningful.
 - **Use case:** When a device shows elevated Volume ratio (>200%) but low Process/Account/Chain diversity ratios, check DeviceInfo first. If the device was only online 5 days out of 90, the 312% volume ratio is expected.
 - **Example:** A device with 4,243 baseline events spread across only 4 power-on sessions (~40 hrs total) has a "true" daily average of ~1,060 events/session-day, not the diluted ~47 events/calendar-day. A recent session producing 1,031 events is exactly normal.
@@ -642,7 +649,7 @@ DeviceProcessEvents
 
 **Interpretation:**
 - **Per-session event volumes** should be compared across sessions. If each power-on session produces roughly similar event counts (600–1,500), the behavior is consistent regardless of how infrequently the device is used.
-- **SessionDuration** shows how long the device was active per day. Cross-reference with DeviceInfo FirstSeen/LastSeen for validation.
+- **SessionDuration** is the span between observed events in a daily bin, not continuous uptime or a verified boot session. Cross-reference independent uptime evidence before normalizing volume.
 - **Process diversity per session** (UniqueProcesses) should be similar across sessions. If the most recent session shows 90+ unique processes and baseline sessions also show 70–90+, the diversity is normal — the same software runs each time the device boots.
 - **Use in report:** Include a power-on session table in the Flagged Device Deep Dive to contextualize why the volume ratio is elevated. Note: "Volume-driven score inflation due to intermittent usage pattern — per-session behavior is consistent with baseline sessions."
 
@@ -657,19 +664,20 @@ The inline report MUST include these sections in order:
 1. **Header** — Workspace, analysis period (baseline/recent windows), drift threshold, device count, total events
 2. **Fleet Daily Trend Table** — Day-by-day event counts, distinct processes, accounts, chains, companies
 3. **Per-Device Drift Score Ranking** — All devices sorted by DriftScore descending, with per-dimension ratios and flag status
-4. **Flagged Device Deep Dive** (for each **Tier 1** device > 150% or DriftScore=999) — Baseline vs. recent comparison, dimension bar chart, new processes, process chains, account context. For new devices (999): identify as "newly onboarded" and list all processes observed. **For devices with elevated volume ratio:** include DeviceInfo uptime pattern (Query 21) and per-session volume table (Query 22) showing power-on cadence and per-session event consistency. Flag intermittent devices with: "⚠️ Intermittent device — online N of M baseline days. Volume ratio reflects power-on burst, not behavioral expansion."
-5. **Tier 2 Device Summaries** (if fleet scaling applied) — One-line summary per Tier 2 device: drift score, top 3 first-seen processes, flag status. No full deep dive.
-6. **First-Seen Process Summary** — Processes appearing only in recent window, grouped by device (Tier 1 + Tier 2 devices)
-7. **Correlated Security Alerts** — SecurityAlert+SecurityIncident correlation for all analyzed devices
-8. **Uptime Context** (if applicable) — For flagged or near-threshold devices, include DeviceInfo-derived power-on session table showing each session's duration, event count, and process diversity. This section contextualizes volume-driven drift scores.
-9. **Account Landscape** — Summary of which accounts executed processes, flagging any unexpected contexts
-10. **Notable Command-Line Patterns** — Reconnaissance/lateral movement/persistence command matches
-11. **Security Assessment** — Emoji-coded findings table with evidence citations
-12. **Verdict Box** — Overall fleet risk level, per-device verdicts, recommendations
+4. **Material Deviations (Including Legitimate)** — Mandatory register from the shared contract; retain explained changes even when security risk is low
+5. **Flagged Device Deep Dive** (for each **Tier 1** device > 150% or DriftScore=999) — Baseline vs. recent comparison, dimension bar chart, new processes, process chains, account context. For new devices (999): identify as "newly onboarded" and list all processes observed. **For devices with elevated volume ratio:** include DeviceInfo observation days (Query 21), daily process spans (Query 22), and any independent evidence supporting intermittent uptime; retain the raw score and any adjusted assessment.
+6. **Tier 2 Device Summaries** (if fleet scaling applied) — One-line summary per Tier 2 device: drift score, top 3 first-seen processes, flag status. No full deep dive.
+7. **First-Seen Process Summary** — Processes appearing only in recent window, grouped by device (Tier 1 + Tier 2 devices)
+8. **Correlated Security Alerts** — SecurityAlert+SecurityIncident correlation for all analyzed devices
+9. **Uptime Context** (if applicable) — For flagged or near-threshold devices, distinguish observed telemetry spans from independently verified uptime when contextualizing volume.
+10. **Account Landscape** — Summary of which accounts executed processes, flagging any unexpected contexts
+11. **Notable Command-Line Patterns** — Reconnaissance/lateral movement/persistence command matches
+12. **Security Assessment** — Emoji-coded findings table with evidence citations
+13. **Verdict Box** — Overall fleet risk level, per-device verdicts, recommendations
 
 ### Inline Chat Report Structure (Single-Device)
 
-Same as fleet-wide sections 1, 3-11, but for one device only. Add:
+Same as fleet-wide sections 1 and 3-13, but for one device only. Add:
 - Full process inventory (baseline vs recent)
 - Complete command-line analysis for suspicious processes
 - Process chain tree visualization
@@ -699,7 +707,7 @@ When outputting to markdown file, include everything from the inline format PLUS
 
 ## Executive Summary
 
-<1-3 sentence summary: how many devices analyzed, how many flagged, overall risk level>
+<1-3 sentence summary: how many devices analyzed, how many flagged, significant legitimate/unexplained deviations, and separately assessed security risk>
 
 ---
 
@@ -714,6 +722,12 @@ When outputting to markdown file, include everything from the inline format PLUS
 
 <Table with all devices, per-dimension ratios, DriftScore, flag status>
 <Devices with DriftScore=999 flagged as "New Device">
+
+---
+
+## Material Deviations (Including Legitimate)
+
+<Render the mandatory register defined in the shared deviation-reporting contract, including legitimate and unverified deviations.>
 
 ---
 
@@ -764,12 +778,12 @@ Render a box-drawn chart inside a code fence. **Inner width: 58 chars** (every l
 
 <If Volume ratio >200% or device known to be intermittent, include DeviceInfo-derived power-on session table>
 
-| Session | Power On | Power Off | Duration | Events | Processes |
+| Day | First Observed | Last Observed | Observed Span | Events | Processes |
 |---------|----------|-----------|----------|--------|-----------|
 | 1 | <date/time> | <date/time> | ~N hrs | <count> | <count> |
 | ... | ... | ... | ... | ... | ... |
 
-⚠️ Intermittent device — online N of M baseline days. Volume ratio reflects power-on burst, not behavioral expansion. Per-session behavior is consistent with baseline sessions.
+<Report N of M days with telemetry. If independent evidence confirms intermittent uptime and comparable session behavior, explain the volume artifact while retaining raw/adjusted scores. Otherwise, state that uptime is unverified.>
 
 ---
 
@@ -875,7 +889,7 @@ Render a single markdown table summarizing all queries executed. **Do NOT includ
 
 ### System/Service Accounts Dominating Volume
 **Problem:** The majority of process events on servers come from system accounts (`SYSTEM`, `LOCAL SERVICE`, `NETWORK SERVICE`, `root`). These accounts are expected and will dominate volume, process, and chain dimensions.
-**Solution:** When analyzing drift, distinguish between system-level processes (expected) and user-driven processes (more significant for drift). In the account landscape, flag any human user accounts (`non-system`) executing unusual processes. System accounts executing new processes are still worth noting but at lower priority.
+**Solution:** Distinguish account context without assuming system activity is legitimate. Compare new processes and commands with the device's baseline, parent/path, and operational evidence; retain material changes from system/service accounts as well as human accounts.
 
 ### Short Baseline Windows and False Positives
 **Problem:** Unlike SPN/user drift which uses a 90-day baseline, device process drift often uses shorter windows (e.g., 6 days baseline, 1 day recent). Short baselines miss infrequent but legitimate processes (weekly maintenance scripts, monthly update cycles, etc.).
@@ -887,7 +901,7 @@ Render a single markdown table summarizing all queries executed. **Do NOT includ
 
 ### Intermittent-Use Device Volume Inflation
 **Problem:** Devices that are only powered on occasionally (e.g., once per month for maintenance, lab servers, training VMs) will have their baseline daily average diluted across the full analysis window — even though telemetry only exists for a handful of days. When one of these devices powers on during the recent window, the volume ratio can spike to 300%+ even though per-session behavior is identical to baseline sessions. This creates near-threshold or above-threshold DriftScores driven entirely by the volume dimension, with no meaningful behavioral change.
-**Solution:** For any device with Volume ratio >200% but Process/Account/Chain/Company ratios below 100%, run **Query 21 (DeviceInfo uptime)** to determine actual days online. If the device was online for <30% of the baseline window (i.e., fewer than ~27 out of 90 days), flag as "⚠️ Intermittent device — volume-driven score inflation" and include a per-session comparison (Query 22). Consider reporting both the raw DriftScore and an "adjusted" assessment that contextualizes the volume dimension against actual uptime days rather than calendar days. The **diversity dimensions** (Processes, Accounts, Chains, Companies) are not affected by intermittent usage and remain reliable drift indicators.
+**Solution:** For any device with Volume ratio >200% but Process/Account/Chain/Company ratios below 100%, run **Query 21** for observation coverage and **Query 22** for comparable daily activity. Missing observations alone do not establish downtime. If independent uptime evidence supports normalization, retain both raw and adjusted values in the deviation register, with the formula and evidence. Recheck process/account/chain identities: lower diversity counts can still hide new execution contexts.
 
 **Chart formatting for adjusted Volume:** In the ASCII drift chart, display only the **effective (adjusted) percentage** in the percentage column, and append the raw value in the description text after the bar. This avoids variable-width bracket content that breaks bar alignment. Example:
 ```
@@ -897,7 +911,7 @@ Process  [ 79.5%] ████████────── ↓ Contracting (97
 
 ### Version-Stamped Process Name False Positives
 **Problem:** Automatic software updates produce binaries with version numbers embedded in the filename (e.g., `AM_Delta_Patch_1.443.XXX.0.exe`, `MicrosoftEdge_X64_134.0.XXXX.XX_*.exe`, `odt*.tmp.exe`). These appear as "first-seen" in Query 16 and "new chains" in Query 17 regardless of baseline length, because each update generates a unique filename.
-**Solution:** When interpreting first-seen processes, check `ProcessVersionInfoCompanyName` — if the signing company is well-known (Microsoft Corporation, Google LLC, etc.), these are expected update artifacts. In the report, group these under "📦 Expected Update Artifacts" rather than flagging as suspicious drift. For automated scoring, consider excluding filenames matching patterns like `AM_Delta_Patch_*`, `MicrosoftEdge_X64_*`, and `*.tmp.exe` from the drift score calculation, or weighting them lower.
+**Solution:** `ProcessVersionInfoCompanyName` is company-name metadata, not signature verification. Validate the update explanation using path, parent, command, baseline cadence, deployment evidence, and signature data where available. Group verified routine artifacts under "📦 Expected Update Artifacts", but retain material changes in the deviation register. Do not silently exclude filename patterns or lower their scoring weights because they look familiar.
 
 ### Linux Processes Dominate Unsigned Query
 **Problem:** Linux binaries do not populate `ProcessVersionInfoCompanyName` (a Windows PE metadata field). Query 19b (unsigned processes) will be flooded with legitimate Linux utilities (`gawk`, `bash`, `grep`, `sed`, `curl`, `apt-get`, etc.) on any fleet containing Linux devices.
@@ -925,6 +939,9 @@ Before presenting results, verify:
 - [ ] All applicable data sources were queried (even if some returned 0 results)
 - [ ] Low-volume denominator floor was applied to any device with BL_DailyAvg < 10
 - [ ] Corroborating evidence was checked for every flagged device
+- [ ] The required deviation register retains legitimate, below-threshold, and lower-tier material changes, with raw/adjusted measurements
+- [ ] Legitimate explanations cite matching evidence and confidence; unavailable corroboration is not treated as a clean result
+- [ ] Previously accepted behavior was reassessed for changed scope, cadence, actor, or contradictory evidence
 - [ ] Empty results are explicitly reported with ✅ (not silently omitted)
 - [ ] The report includes the drift score formula and threshold for transparency
 - [ ] SecurityAlert was joined with SecurityIncident for real Status/Classification (never read SecurityAlert.Status directly)
@@ -934,13 +951,14 @@ Before presenting results, verify:
 - [ ] DriftScore=999 entities were flagged as "New Device" not "Critical Drift"
 - [ ] System/service account processes were distinguished from user-driven processes
 - [ ] First-seen processes were checked for legitimate software deployment vs suspicious binaries
-- [ ] Version-stamped update binaries (AM_Delta_Patch_*, MicrosoftEdge_X64_*, odt*.tmp.exe) were classified as expected noise
+- [ ] Version-stamped update explanations were verified; company-name metadata alone did not establish legitimacy, and material changes remain visible
 - [ ] Unsigned/unusually-signed binaries were identified (Linux devices flagged separately from Windows)
 - [ ] Notable command-line patterns were searched (reconnaissance, lateral movement, persistence, exfiltration)
 - [ ] SecurityAlert correlation was performed for all analyzed devices
 - [ ] Baseline window length was noted and its limitations acknowledged
 - [ ] For devices with Volume ratio >200% or DriftScore >130%: DeviceInfo uptime (Query 21) was checked to identify intermittent-use devices
 - [ ] Intermittent-use devices were annotated with uptime context and per-session comparison (Query 22)
+- [ ] Missing DeviceInfo snapshots and daily event spans were not treated as proof of downtime or continuous uptime
 - [ ] Volume-driven drift scores on intermittent devices were contextualized as mathematical artifacts (not behavioral expansion)
 
 ---

@@ -71,7 +71,9 @@ This skill detects **scope drift** — the gradual, often imperceptible expansio
 5. **ALWAYS apply the low-volume denominator floor** to prevent false-positive drift scores on sparse baselines
 6. **ALWAYS correlate across all required data sources** (SigninLogs, AADNonInteractiveUserSignInLogs, AuditLogs, SecurityAlert, Anomaly table, Identity Protection, CloudAppEvents, EmailEvents)
 7. **ALWAYS run independent queries in parallel** for performance
-8. **NEVER report a drift flag without corroborating evidence** from at least one secondary data source
+8. **ALWAYS retain measured behavioral deviations, including legitimate ones** — corroboration determines threat confidence, not whether a deviation is reported
+
+**Required companion:** Read and follow the [deviation-reporting contract](../deviation-reporting.md) before tiering, applying benign explanations, or generating a report.
 
 ### Data Sources
 
@@ -173,7 +175,7 @@ After Queries 6+7, count distinct users in the result set:
 | **2–30 users** | Small | All flagged | Full deep dive for every user > 150%. No limiting needed. |
 | **31–100 users** | Medium | Top 10 | Full deep dive for top 10 by max(Interactive, Non-Interactive) DriftScore. Summary row for remaining flagged users. |
 | **101–500 users** | Large | Top 10 | Full deep dive for top 10. Tier 2 summary (next 15) with Identity Protection + alerts only. Remaining flagged users listed in ranking table. |
-| **> 500 users** | Very Large | Top 10 | Same as Large, plus: filter Phase 1 results to `BL_TotalSignIns > 10` to exclude near-silent accounts from scoring. |
+| **> 500 users** | Very Large | Top 10 | Same as Large; exclude `BL_TotalSignIns <= 10` from ratio ranking only, retaining observed material changes and coverage limitations. |
 
 ### Tiered Depth Model (Multi-User)
 
@@ -182,7 +184,9 @@ After Queries 6+7, count distinct users in the result set:
 | **Tier 1** (Full) | Top N by DriftScore | All: Q8–Q13 | Full deep dive: both ASCII charts, dimension tables, AuditLog changes, alerts, anomalies, Identity Protection, CloudAppEvents, EmailEvents |
 | **Tier 2** (Summary) | Next 15 flagged users (or remaining if < 15) | Q10 + Q11 only (Identity Protection + SecurityAlert) | One-line summary: both scores, risk state, alert count, flag status |
 | **Tier 3** (Score only) | All remaining flagged users | None beyond Phase 1 | Row in ranking table: UPN, interactive score, non-interactive score, flag emoji |
-| **Stable** | Users ≤ 150% | None beyond Phase 1 | Omitted from deep dives. Included in summary statistics only. |
+| **Below threshold** | Users ≤ 150% | None beyond Phase 1 | No automatic deep dive; observed material changes remain in the deviation register. |
+
+**Tiering limits depth, not visibility:** Preserve observed material deviations from every tier, including entities excluded from ratio ranking. A missing deep dive is not evidence of legitimacy.
 
 ### User Override
 
@@ -199,7 +203,7 @@ When tiered depth is applied, **always disclose** in the report header:
 **Deep Dives:** Top <X> by DriftScore (Tier 1: full analysis)
 **Summaries:** <Y> additional flagged users (Tier 2: risk + alerts only)
 **Score Only:** <Z> additional flagged users (Tier 3: ranking table only)
-**Stable:** <W> users ≤ 150% (omitted from deep dives)
+**Below Threshold:** <W> users ≤ 150% (material deviations still reported)
 ```
 
 ---
@@ -247,11 +251,11 @@ $$
 
 | Score | Meaning | Action |
 |-------|---------|--------|
-| **< 80** | Contracting scope | ✅ Normal — entity is doing less than usual |
-| **80–120** | Stable / normal variance | ✅ No action required |
-| **120–150** | Moderate deviation | 🟡 Monitor — check for legitimate reasons |
-| **> 150** | Significant drift | 🔴 FLAG — investigate with corroborating evidence |
-| **> 250** | Extreme drift | 🔴 CRITICAL — immediate investigation required |
+| **< 80** | Aggregate contraction | Check coverage and dimension changes; not automatically normal |
+| **80–120** | Aggregate stability | Check material changes hidden by the composite score |
+| **120–150** | Moderate deviation | 🟡 Report and assess, even if legitimate |
+| **> 150** | Significant drift | 🔴 Flag behavioral drift; assess threat risk separately |
+| **> 250** | Extreme drift | 🔴 Prioritize review; score alone does not establish a threat |
 
 ### Low-Volume Denominator Floor
 
@@ -334,11 +338,12 @@ This is the primary query that computes per-user behavioral profiles and drift m
 ### Phase 4: Score Computation & Report Generation
 
 1. Compute DriftScore for BOTH interactive and non-interactive using entity-specific formulas
-2. Apply the low-volume denominator floor
+2. Apply the low-volume denominator floor, retaining raw and adjusted scores
 3. Flag if either score exceeds 150% threshold
 4. For flagged users: assess corroborating evidence (account changes, alerts, anomaly table, Identity Protection, cloud app activity drift, email pattern drift)
-5. Generate risk assessment with emoji-coded findings
-6. Render output in the user's selected mode
+5. Populate the required deviation register from all observed material changes, including legitimate, below-threshold, and uncorroborated changes
+6. Generate risk assessment separately from behavioral deviation, with emoji-coded findings
+7. Render output in the user's selected mode
 
 ---
 
@@ -507,8 +512,8 @@ SecurityIncident
 | Incident Status | Classification | Impact on Drift Assessment |
 |-----------------|----------------|----------------------------|
 | Closed | TruePositive | 🔴 Confirmed threat — significantly increases drift risk |
-| Closed | FalsePositive | 🟢 False alarm — discount from drift risk, note as noise |
-| Closed | BenignPositive | 🟡 Expected behavior — note but don't escalate |
+| Closed | FalsePositive | 🟢 Discount that detection's threat weight; retain independently observed deviations |
+| Closed | BenignPositive | 🟡 Retain the explained deviation and its evidence; reassess changed scope |
 | Active/New | Any | 🟠 Unresolved — flag for attention, may indicate ongoing threat |
 
 **Product Name Mapping (Legacy → Current Branding):**
@@ -646,13 +651,14 @@ The inline report MUST include these sections in order:
 1. **Header** — Workspace, analysis period, drift threshold, data sources
 2. **Interactive Drift Score** — 7-dimension breakdown with ratios
 3. **Non-Interactive Drift Score** — 6-dimension breakdown with ratios
-4. **Flagged Dimension Deep Dive** (for any dimension > 150%) — Baseline vs. recent comparison, new IPs/apps/devices, dimension bar chart
-5. **Correlated Signal Summary** — AuditLogs, SecurityAlert/Incident, and anomaly table findings in a single table
-6. **Identity Protection Summary** — Risk events, risk states, risk levels
-7. **Cloud App Activity Drift** — CloudAppEvents baseline vs. recent: action types, apps, admin ops, impersonation, new countries/IPs
-8. **Email Pattern Drift** — EmailEvents baseline vs. recent: volume, direction, sender domains, threat emails
-9. **Security Assessment** — Emoji-coded findings table with evidence citations
-10. **Verdict Box** — Overall risk level, root cause analysis, recommendations
+4. **Material Deviations (Including Legitimate)** — Mandatory register from the shared contract; retain explained changes even when security risk is low
+5. **Flagged Dimension Deep Dive** (for any dimension > 150%) — Baseline vs. recent comparison, new IPs/apps/devices, dimension bar chart
+6. **Correlated Signal Summary** — AuditLogs, SecurityAlert/Incident, and anomaly table findings in a single table
+7. **Identity Protection Summary** — Risk events, risk states, risk levels
+8. **Cloud App Activity Drift** — CloudAppEvents baseline vs. recent: action types, apps, admin ops, impersonation, new countries/IPs
+9. **Email Pattern Drift** — EmailEvents baseline vs. recent: volume, direction, sender domains, threat emails
+10. **Security Assessment** — Emoji-coded findings table with evidence citations
+11. **Verdict Box** — Overall risk level, root cause analysis, recommendations
 
 ### Markdown File Report Structure
 
@@ -675,7 +681,7 @@ When outputting to markdown file, include everything from the inline format PLUS
 
 ## Executive Summary
 
-<1-3 sentence summary: interactive drift score, non-interactive drift score, overall risk level>
+<1-3 sentence summary: both drift scores, significant legitimate/unexplained deviations, and separately assessed security risk>
 
 ---
 
@@ -757,6 +763,12 @@ Same box-drawn format as Interactive. **Inner width: 58 chars.** 6 dimensions (n
 |-----------|--------|----------------|-------------|-------|----------|--------|
 
 <New apps, IPs, locations appearing only in recent period>
+
+---
+
+## Material Deviations (Including Legitimate)
+
+<Render the mandatory register defined in the shared deviation-reporting contract, including legitimate and unverified deviations.>
 
 ---
 
@@ -875,7 +887,7 @@ Render a single markdown table summarizing all queries executed. **Do NOT includ
 
 ### Non-Interactive Volume Inflation
 **Problem:** Non-interactive sign-ins (token refreshes, background app activity) can number in the thousands per day. A brief outage or token cache flush can cause dramatic volume swings.
-**Solution:** Weight non-interactive drift scores lower in the overall assessment unless corroborated by new apps or IPs. Volume-only drift in non-interactive is rarely meaningful without other signals.
+**Solution:** Keep the scoring formula and raw measurements unchanged. Check token-refresh cadence, outages, and app/IP changes against baseline before accepting an operational explanation. Retain material volume deviations and any supported adjustment in the register, even when the explanation reduces security concern.
 
 ### Cross-Join KQL Error
 **Problem:** `join kind=inner on 1==1` (cross-join) is NOT supported in KQL Sentinel Data Lake. The SPN query uses separate subqueries joined on `ServicePrincipalId`, but user queries target a single UPN and cannot use this pattern.
@@ -940,6 +952,9 @@ Before presenting results, verify:
 - [ ] All applicable data sources were queried (even if some returned 0 results)
 - [ ] Low-volume denominator floor was applied to any entity with BL_DailyAvg < 10
 - [ ] Corroborating evidence was checked for every flagged entity
+- [ ] The required deviation register retains legitimate, below-threshold, and lower-tier material changes, with raw/adjusted measurements
+- [ ] Legitimate explanations cite matching evidence and confidence; unavailable corroboration is not treated as a clean result
+- [ ] Previously accepted behavior was reassessed for changed scope, cadence, actor, or contradictory evidence
 - [ ] Empty results are explicitly reported with ✅ (not silently omitted)
 - [ ] The report includes the drift score formula and threshold for transparency
 - [ ] SecurityAlert was joined with SecurityIncident for real Status/Classification (never read SecurityAlert.Status directly)

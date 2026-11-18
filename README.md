@@ -110,6 +110,11 @@ For authorized local evidence exports, see the
 is explicit opt-in; configured MCP servers and declared tools are not proof of
 execution, and missing prompt text is not proof of no activity.
 
+See the [SOC skill implementation plan](docs/soc-skill-implementation-plan.md)
+for the prioritized expansion of campaign, BEC, ransomware, telemetry-health,
+privileged-access, cloud-resource, exfiltration, persistence, and
+post-containment investigations.
+
 The secure Python context/evidence writers require Python 3.8+ and POSIX
 descriptor-relative, no-follow filesystem support. They fail closed on
 unsupported platforms; use a supported POSIX environment for those helpers.

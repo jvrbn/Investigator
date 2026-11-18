@@ -66,7 +66,9 @@ This skill detects **scope drift** — the gradual, often imperceptible expansio
 4. **ALWAYS apply the low-volume denominator floor** to prevent false-positive drift scores on sparse baselines
 5. **ALWAYS correlate across all required data sources** (AADServicePrincipalSignInLogs, AuditLogs, SecurityAlert)
 6. **ALWAYS run independent queries in parallel** for performance
-7. **NEVER report a drift flag without corroborating evidence** from at least one secondary data source
+7. **ALWAYS retain measured behavioral deviations, including legitimate ones** — corroboration determines threat confidence, not whether a deviation is reported
+
+**Required companion:** Read and follow the [deviation-reporting contract](../deviation-reporting.md) before tiering, applying benign explanations, or generating a report.
 
 ### Data Sources
 
@@ -162,7 +164,7 @@ After Query 1, count distinct SPNs in the result set:
 | **≤ 30 SPNs** | Small | All flagged | Full deep dive for every SPN > 150%. No limiting needed. |
 | **31–100 SPNs** | Medium | Top 10 | Full deep dive for top 10 by DriftScore. Summary row for remaining flagged SPNs. |
 | **101–500 SPNs** | Large | Top 10 | Full deep dive for top 10. Tier 2 summary (next 15) with new resources/IPs only. Remaining flagged SPNs listed in ranking table with scores but no deep dive. |
-| **> 500 SPNs** | Very Large | Top 10 | Same as Large, plus: filter Phase 1 results to `BL_TotalSignIns > 10` to exclude near-silent SPNs from scoring. |
+| **> 500 SPNs** | Very Large | Top 10 | Same as Large; exclude `BL_TotalSignIns <= 10` from ratio ranking only, retaining observed material changes and coverage limitations. |
 
 ### Tiered Depth Model
 
@@ -173,7 +175,9 @@ After computing drift scores and ranking all SPNs, assign tiers:
 | **Tier 1** (Full) | Top N by DriftScore | All: Q2, Q3, Q4 | Full deep dive: ASCII chart, dimension table, new resources/IPs/locations, AuditLog changes, alerts |
 | **Tier 2** (Summary) | Next 15 flagged SPNs (or remaining if < 15) | Q4 only (SecurityAlert correlation) | One-line summary per SPN: score, top 3 new resources, new IPs, flag status |
 | **Tier 3** (Score only) | All remaining flagged SPNs | None beyond Phase 1 | Row in ranking table: SPN name, drift score, dimension ratios, flag emoji |
-| **Stable** | SPNs ≤ 150% | None beyond Phase 1 | Omitted from deep dives. Included in summary statistics only. |
+| **Below threshold** | SPNs ≤ 150% | None beyond Phase 1 | No automatic deep dive; observed material changes remain in the deviation register. |
+
+**Tiering limits depth, not visibility:** Preserve observed material deviations from every tier, including entities excluded from ratio ranking. A missing deep dive is not evidence of legitimacy.
 
 ### User Override
 
@@ -190,7 +194,7 @@ When tiered depth is applied, **always disclose** in the report header:
 **Deep Dives:** Top <X> by DriftScore (Tier 1: full analysis)
 **Summaries:** <Y> additional flagged SPNs (Tier 2: alert correlation only)
 **Score Only:** <Z> additional flagged SPNs (Tier 3: ranking table only)
-**Stable:** <W> SPNs ≤ 150% (omitted from deep dives)
+**Below Threshold:** <W> SPNs ≤ 150% (material deviations still reported)
 ```
 
 ---
@@ -217,11 +221,11 @@ $$
 
 | Score | Meaning | Action |
 |-------|---------|--------|
-| **< 80** | Contracting scope | ✅ Normal — entity is doing less than usual |
-| **80–120** | Stable / normal variance | ✅ No action required |
-| **120–150** | Moderate deviation | 🟡 Monitor — check for legitimate reasons |
-| **> 150** | Significant drift | 🔴 FLAG — investigate with corroborating evidence |
-| **> 250** | Extreme drift | 🔴 CRITICAL — immediate investigation required |
+| **< 80** | Aggregate contraction | Check coverage and dimension changes; not automatically normal |
+| **80–120** | Aggregate stability | Check material changes hidden by the composite score |
+| **120–150** | Moderate deviation | 🟡 Report and assess, even if legitimate |
+| **> 150** | Significant drift | 🔴 Flag behavioral drift; assess threat risk separately |
+| **> 250** | Extreme drift | 🔴 Prioritize review; score alone does not establish a threat |
 
 ### Low-Volume Denominator Floor
 
@@ -296,11 +300,12 @@ Run Query 4 in parallel with Phase 2 queries for performance.
 ### Phase 4: Score Computation & Report Generation
 
 1. Compute DriftScore per SPN using the 5-dimension formula
-2. Apply the low-volume denominator floor
+2. Apply the low-volume denominator floor, retaining raw and adjusted scores
 3. Flag any entity exceeding 150% threshold
 4. For flagged entities: assess corroborating evidence (permission changes, alerts)
-5. Generate risk assessment with emoji-coded findings
-6. Render output in the user's selected mode
+5. Populate the required deviation register from all observed material changes, including legitimate, below-threshold, and uncorroborated changes
+6. Generate risk assessment separately from behavioral deviation, with emoji-coded findings
+7. Render output in the user's selected mode
 
 ---
 
@@ -459,8 +464,8 @@ SecurityIncident
 | Incident Status | Classification | Impact on Drift Assessment |
 |-----------------|----------------|----------------------------|
 | Closed | TruePositive | 🔴 Confirmed threat — significantly increases drift risk |
-| Closed | FalsePositive | 🟢 False alarm — discount from drift risk, note as noise |
-| Closed | BenignPositive | 🟡 Expected behavior — note but don't escalate |
+| Closed | FalsePositive | 🟢 Discount that detection's threat weight; retain independently observed deviations |
+| Closed | BenignPositive | 🟡 Retain the explained deviation and its evidence; reassess changed scope |
 | Active/New | Any | 🟠 Unresolved — flag for attention, may indicate ongoing threat |
 
 **Product Name Mapping (Legacy → Current Branding):**
@@ -491,12 +496,13 @@ The inline report MUST include these sections in order:
 
 1. **Header** — Workspace, analysis period, drift threshold, data sources
 2. **Ranked Drift Score Table** — All SPNs sorted by DriftScore descending, with per-dimension ratios
-3. **Flagged Entity Deep Dive** (for each **Tier 1** SPN > 150%) — Baseline vs. recent comparison, dimension bar chart, new IPs/resources, corroborating evidence
-4. **Tier 2 Entity Summaries** (if entity scaling applied) — One-line summary per Tier 2 SPN: score, top 3 new resources, new IPs, alert count
-5. **Correlated Signal Summary** — AuditLogs and SecurityAlert/Incident findings in a single table
-6. **Behavioral Baseline Chart** — ASCII bar chart showing all SPNs' daily avg vs. baseline
-7. **Security Assessment** — Emoji-coded findings table with evidence citations
-8. **Verdict Box** — Overall risk level, root cause analysis, recommendations
+3. **Material Deviations (Including Legitimate)** — Mandatory register from the shared contract; retain explained changes even when security risk is low
+4. **Flagged Entity Deep Dive** (for each **Tier 1** SPN > 150%) — Baseline vs. recent comparison, dimension bar chart, new IPs/resources, corroborating evidence
+5. **Tier 2 Entity Summaries** (if entity scaling applied) — One-line summary per Tier 2 SPN: score, top 3 new resources, new IPs, alert count
+6. **Correlated Signal Summary** — AuditLogs and SecurityAlert/Incident findings in a single table
+7. **Behavioral Baseline Chart** — ASCII bar chart showing all SPNs' daily avg vs. baseline
+8. **Security Assessment** — Emoji-coded findings table with evidence citations
+9. **Verdict Box** — Overall risk level, root cause analysis, recommendations
 
 ### Markdown File Report Structure
 
@@ -520,7 +526,7 @@ When outputting to markdown file, include everything from the inline format PLUS
 
 ## Executive Summary
 
-<1-3 sentence summary: how many SPNs analyzed, how many flagged, overall risk level>
+<1-3 sentence summary: how many SPNs analyzed, how many flagged, significant legitimate/unexplained deviations, and separately assessed security risk>
 
 ---
 
@@ -528,6 +534,12 @@ When outputting to markdown file, include everything from the inline format PLUS
 
 <ASCII table with all SPNs, per-dimension ratios, flag status>
 <!-- Wrap in code fence for consistent rendering -->
+
+---
+
+## Material Deviations (Including Legitimate)
+
+<Render the mandatory register defined in the shared deviation-reporting contract, including legitimate and unverified deviations.>
 
 ---
 
@@ -636,7 +648,7 @@ Render a single markdown table summarizing all queries executed. **Do NOT includ
 
 ### SecurityAlert.Status Is Immutable — Always Join SecurityIncident
 **Problem:** The `Status` field on `SecurityAlert` is set to `"New"` at creation time and **never changes**. It does NOT reflect whether the alert has been investigated, closed, or classified. Reading `SecurityAlert.Status` as current investigation status will always show "New" regardless of actual state.
-**Solution:** MUST join with `SecurityIncident` to get real `Status` (New/Active/Closed) and `Classification` (TruePositive/FalsePositive/BenignPositive). See Query 4 which implements this join. When assessing drift risk from alerts, differentiate: Closed-FalsePositive alerts are noise (discount), Closed-TruePositive alerts are confirmed threats (escalate), Active/New incidents need attention (flag).
+**Solution:** MUST join with `SecurityIncident` to get real `Status` (New/Active/Closed) and `Classification` (TruePositive/FalsePositive/BenignPositive). See Query 4 which implements this join. Discount a Closed-FalsePositive detection's threat weight without removing independently observed deviations. Retain Closed-BenignPositive explanations within their documented scope; Closed-TruePositive and Active/New incidents require contextual review.
 
 ### Low-Volume Statistical Inflation
 **Problem:** Entities with very low baseline activity (e.g., 1 sign-in/day) will show extreme volume ratios even with minor changes.
@@ -647,12 +659,12 @@ Render a single markdown table summarizing all queries executed. **Do NOT includ
 **Solution:** Note if the 7-day recent window falls on an atypical portion of the cycle. The 90-day baseline smooths most cyclical patterns, but edge cases exist.
 
 ### IPv6 Fabric Address Churn
-**Problem:** Microsoft first-party SPNs (MCAS, Defender, etc.) rotate through `fd00:` internal fabric IPv6 addresses automatically. This inflates the IP ratio without representing actual infrastructure changes.
-**Solution:** When all new IPs share the same `fd00:` prefix, note this as "Microsoft internal fabric rotation" and downgrade the IP dimension's contribution to the drift score assessment. Do NOT flag IPv6 churn from Microsoft fabric addresses as suspicious.
+**Problem:** Unique-local IPv6 address churn can inflate the IP ratio, but an `fd00:` prefix alone does not identify Microsoft infrastructure or prove legitimacy.
+**Solution:** Validate the SPN identity, source behavior, resource set, and cadence against baseline and tenant-local context before accepting fabric rotation. Retain the measured IP changes and raw score in the deviation register; without matching evidence, keep the explanation unverified rather than automatically reducing the score.
 
 ### Credential Rotation False Positives
 **Problem:** Automated certificate/secret rotation creates regular `Add/Remove service principal credentials` audit entries.
-**Solution:** Check if credential operations follow a regular cadence (weekly/monthly). If rotation is periodic and consistent with baseline, classify as operational — not drift.
+**Solution:** Compare cadence, initiating identity, target, credential type, and permission scope with baseline and any verified rotation/change record. Periodicity alone is not authorization. Group baseline-consistent rotations, but retain material changes as explained or unexplained deviations with evidence and review triggers.
 
 ### SPNs Without Baseline Data
 **Problem:** Newly provisioned SPNs have no baseline to compare against.
@@ -677,7 +689,7 @@ Render a single markdown table summarizing all queries executed. **Do NOT includ
 | Zero entities in results | Verify the workspace has sign-in data for the entity type. Check if logging is enabled. |
 | Query timeout | Reduce the baseline window from 90 to 60 days, or add `\| take 100` to intermediate results. |
 | AuditLogs `has_any` not matching | Ensure IDs are quoted strings in the `dynamic()` array. Use `tostring()` on dynamic fields. |
-| Very large number of SPNs | Add `\| where BL_TotalSignIns > 10` to filter out extremely low-activity SPNs that add noise. |
+| Very large number of SPNs | Limit ratio ranking to `BL_TotalSignIns > 10`, but retain observed material changes from excluded SPNs in the deviation register. |
 
 ### Validation Checklist
 
@@ -686,11 +698,14 @@ Before presenting results, verify:
 - [ ] All applicable data sources were queried (even if some returned 0 results)
 - [ ] Low-volume denominator floor was applied to any entity with BL_DailyAvg < 10
 - [ ] Corroborating evidence was checked for every flagged entity
+- [ ] The required deviation register retains legitimate, below-threshold, and lower-tier material changes, with raw/adjusted measurements
+- [ ] Legitimate explanations cite matching evidence and confidence; unavailable corroboration is not treated as a clean result
+- [ ] Previously accepted behavior was reassessed for changed scope, cadence, actor, or contradictory evidence
 - [ ] Empty results are explicitly reported with ✅ (not silently omitted)
 - [ ] The report includes the drift score formula and threshold for transparency
 - [ ] SecurityAlert was joined with SecurityIncident for real Status/Classification (never read SecurityAlert.Status directly)
 - [ ] Incident classifications (TP/FP/BP) were factored into risk assessment — FalsePositive alerts discounted, TruePositive alerts escalated
-- [ ] IPv6 `fd00:` addresses were identified as Microsoft fabric (not adversary infrastructure)
+- [ ] IPv6 fabric-rotation explanations were verified against identity and behavior, not inferred from `fd00:` alone
 - [ ] Credential rotation cadence was assessed for AuditLog findings
 - [ ] When drilling into incidents/alerts via Triage MCP, `ProviderIncidentId` was used (never `IncidentNumber` or `SystemAlertId`)
 
